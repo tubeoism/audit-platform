@@ -1,11 +1,11 @@
 # ADR-0005: Identity and authentication
 
-- Status: Proposed, 2026-11-09. Sponsor direction: sign-in by email with per-user MFA enrolled by QR code. Awaiting sign-off on the details below.
+- Status: Accepted, 2026-11-09 (sponsor chose email + password + mandatory TOTP). Open detail: outbound mail provider for invitations and resets.
 
 ## Context
 3–10 internal users. The master must know who each caller is to enforce engagement membership, attribute every change, and sign off at the right review level. Laptops are often offline. The firm does not depend on Microsoft Entra ID for this application. The sponsor wants email-based sign-in with MFA, each user enrolling with their own QR code.
 
-## Proposed decision
+## Decision
 Accounts are held by the master (ASP.NET Core Identity on the master PostgreSQL database). There is no self-registration.
 
 | Element | Proposal |
