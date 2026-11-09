@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Content-addressed evidence store (BLAKE3) with intake log for chain of custody. Files never live in the database.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Blake3" />
+  </ItemGroup>
+</Project>

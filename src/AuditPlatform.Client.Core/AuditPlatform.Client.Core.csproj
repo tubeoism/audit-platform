@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Client logic independent of the UI toolkit: local SQLite store, outbox, sync agent, view models. Testable on any OS.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AuditPlatform.Contracts\AuditPlatform.Contracts.csproj" />
+    <ProjectReference Include="..\AuditPlatform.Domain\AuditPlatform.Domain.csproj" />
+    <ProjectReference Include="..\AuditPlatform.Evidence\AuditPlatform.Evidence.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Master system of record: PostgreSQL schema (EF Core + Npgsql), migrations, append-only audit log store.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="EFCore.NamingConventions" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AuditPlatform.AuditLog\AuditPlatform.AuditLog.csproj" />
+    <ProjectReference Include="..\AuditPlatform.Domain\AuditPlatform.Domain.csproj" />
+  </ItemGroup>
+</Project>
