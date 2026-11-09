@@ -1,6 +1,6 @@
 # ADR-0005: Identity and authentication
 
-- Status: Accepted, 2026-11-09 (sponsor chose email + password + mandatory TOTP). Open detail: outbound mail provider for invitations and resets.
+- Status: Accepted, 2026-11-09 (sponsor chose email + password + mandatory TOTP). Outbound mail: Brevo (chosen 2026-11-09).
 
 ## Context
 3–10 internal users. The master must know who each caller is to enforce engagement membership, attribute every change, and sign off at the right review level. Laptops are often offline. The firm does not depend on Microsoft Entra ID for this application. The sponsor wants email-based sign-in with MFA, each user enrolling with their own QR code.
@@ -26,6 +26,6 @@ Accounts are held by the master (ASP.NET Core Identity on the master PostgreSQL 
 - **Microsoft Entra ID.** Not used: no dependency on the firm's Microsoft tenant for this application.
 
 ## Consequences
-- The master needs outbound email (SMTP or a mail API) for invitations and resets only; daily sign-in does not depend on email.
+- The master sends invitation and reset emails through Brevo transactional SMTP (`smtp-relay.brevo.com:587`, STARTTLS) only; daily sign-in does not depend on email. The sender domain (`audit.io.vn`) must be authenticated in Brevo with SPF, DKIM and DMARC records in Cloudflare DNS, so that invitations are not filtered as spam. The Brevo SMTP key is entered on the VM only.
 - Data Protection keys must be backed up with the database; losing them forces every user to re-enrol TOTP.
 - Until this ADR is implemented the master keeps the fail-closed `Pending` scheme and answers 401 to everyone.
