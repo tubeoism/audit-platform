@@ -1,0 +1,21 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AuditPlatform.AuditLog/AuditPlatform.AuditLog.csproj" />
+    <Project Path="src/AuditPlatform.Client.Core/AuditPlatform.Client.Core.csproj" />
+    <Project Path="src/AuditPlatform.Client.Wpf/AuditPlatform.Client.Wpf.csproj" />
+    <Project Path="src/AuditPlatform.Contracts/AuditPlatform.Contracts.csproj" />
+    <Project Path="src/AuditPlatform.Domain/AuditPlatform.Domain.csproj" />
+    <Project Path="src/AuditPlatform.Evidence/AuditPlatform.Evidence.csproj" />
+    <Project Path="src/AuditPlatform.Master.Data/AuditPlatform.Master.Data.csproj" />
+    <Project Path="src/AuditPlatform.Master/AuditPlatform.Master.csproj" />
+    <Project Path="src/AuditPlatform.Sync/AuditPlatform.Sync.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AuditPlatform.AuditLog.Tests/AuditPlatform.AuditLog.Tests.csproj" />
+    <Project Path="tests/AuditPlatform.Client.Core.Tests/AuditPlatform.Client.Core.Tests.csproj" />
+    <Project Path="tests/AuditPlatform.Domain.Tests/AuditPlatform.Domain.Tests.csproj" />
+    <Project Path="tests/AuditPlatform.Evidence.Tests/AuditPlatform.Evidence.Tests.csproj" />
+    <Project Path="tests/AuditPlatform.Master.Data.Tests/AuditPlatform.Master.Data.Tests.csproj" />
+    <Project Path="tests/AuditPlatform.Master.Tests/AuditPlatform.Master.Tests.csproj" />
+  </Folder>
+</Solution>

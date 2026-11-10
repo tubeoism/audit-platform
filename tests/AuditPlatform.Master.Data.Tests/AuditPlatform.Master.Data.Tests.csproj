@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AuditPlatform.Master.Data\AuditPlatform.Master.Data.csproj" />
+  </ItemGroup>
+</Project>

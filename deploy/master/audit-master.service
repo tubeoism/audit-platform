@@ -1,0 +1,33 @@
+# systemd unit for the master service on the Oracle Cloud Arm VM.
+# Installed by the deploy step (next phase); kept here so the runtime contract is reviewed with the code.
+[Unit]
+Description=Audit Platform master service
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=exec
+User=audit
+Group=audit
+WorkingDirectory=/opt/audit-master
+ExecStart=/usr/bin/dotnet /opt/audit-master/AuditPlatform.Master.dll
+# Secrets (ConnectionStrings__Master, R2 keys, Anthropic API key) live only in this root-owned 0600 file on the VM.
+EnvironmentFile=/etc/audit-master/master.env
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5080
+Environment=DOTNET_gcServer=0
+Restart=on-failure
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/srv/audit
+CapabilityBoundingSet=
+LockPersonality=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

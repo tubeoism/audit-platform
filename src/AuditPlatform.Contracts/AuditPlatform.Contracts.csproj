@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Wire contracts shared by master and client: SignalR hub interfaces and sync messages.</Description>
+  </PropertyGroup>
+</Project>

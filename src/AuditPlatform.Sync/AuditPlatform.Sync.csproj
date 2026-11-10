@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Sync engine abstraction. The concrete engine is chosen in spike week 1 (ADR-0004).</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AuditPlatform.Contracts\AuditPlatform.Contracts.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Append-only, hash-chained audit log: entry model, chain computation and independent verification.</Description>
+  </PropertyGroup>
+</Project>

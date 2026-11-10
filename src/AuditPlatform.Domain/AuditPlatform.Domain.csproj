@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Working-paper domain model: engagements, templates, procedure working papers, review notes, sign-off.</Description>
+  </PropertyGroup>
+</Project>
