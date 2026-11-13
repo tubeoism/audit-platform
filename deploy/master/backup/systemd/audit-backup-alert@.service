@@ -1,0 +1,6 @@
+[Unit]
+Description=Send a backup failure alert for %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/audit-backup-alert --unit %i

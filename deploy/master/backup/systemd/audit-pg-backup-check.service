@@ -1,0 +1,9 @@
+[Unit]
+Description=Check WAL archiving and base backup freshness; alert by e-mail on problems
+After=postgresql.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/audit-pg-backup-check
+TimeoutStartSec=10min

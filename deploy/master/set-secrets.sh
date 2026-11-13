@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Interactive: asks for R2 and Brevo values and writes them into /etc/audit-master/master.env (root, 0600).
+# Interactive: asks for R2, Brevo and backup-alert values and writes them into /etc/audit-master/master.env (root, 0600).
 # Secrets are read without echo and never printed. Leave an answer empty to keep the current value.
 # Run on the VM:  sudo audit-set-secrets
 set -euo pipefail
@@ -25,9 +25,11 @@ ask R2_SECRET_ACCESS_KEY "R2 Secret Access Key"  secret
 echo "== Brevo (API key) =="
 ask Mail__BrevoApiKey "Brevo API key (xkeysib-...)" secret
 ask Mail__From        "Địa chỉ gửi"                 plain  no-reply@audit.io.vn
+echo "== Cảnh báo sao lưu =="
+ask BACKUP_ALERT_EMAIL "E-mail nhận cảnh báo backup" plain
 
 tmp="$(mktemp /etc/audit-master/.master.env.XXXXXX)"; chmod 0600 "$tmp"
-NAMES="R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY Mail__BrevoApiKey Mail__From" \
+NAMES="R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY Mail__BrevoApiKey Mail__From BACKUP_ALERT_EMAIL" \
 awk '
   BEGIN { n = split(ENVIRON["NAMES"], k, " "); for (i = 1; i <= n; i++) want[k[i]] = 1 }
   { line = $0; sub(/^# */, "", line); split(line, kv, "=");
@@ -37,7 +39,10 @@ awk '
 ' "$ENV_FILE" > "$tmp"
 mv -f "$tmp" "$ENV_FILE"; chown root:root "$ENV_FILE"; chmod 0600 "$ENV_FILE"
 
-echo "Đã lưu vào $ENV_FILE. Khởi động lại master..."
+echo "Đã lưu vào $ENV_FILE."
+# Keep WAL-G's copy of the R2 credentials in step (installed by backup/backup-setup.sh).
+[[ -x /usr/local/sbin/audit-walg-config && -d /etc/wal-g ]] && /usr/local/sbin/audit-walg-config
+echo "Khởi động lại master..."
 systemctl restart audit-master.service
 sleep 3
 curl -fsS -o /dev/null http://127.0.0.1:5080/healthz/ready && echo "Master OK." || echo "Master chưa sẵn sàng, xem: journalctl -u audit-master -n 50"

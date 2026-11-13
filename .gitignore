@@ -484,3 +484,6 @@ $RECYCLE.BIN/
 # Local master data in development
 .data/
 out/
+
+# Not a Visual Studio backup folder: PostgreSQL backup scripts for the master
+!deploy/master/backup/
