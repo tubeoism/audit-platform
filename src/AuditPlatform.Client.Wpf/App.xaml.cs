@@ -1,6 +1,8 @@
 using System.IO;
 using System.Windows;
+using System.Net.Http;
 using AuditPlatform.Client.Core;
+using AuditPlatform.Client.Core.Auth;
 using AuditPlatform.Client.Core.LocalStore;
 using AuditPlatform.Client.Core.Sync;
 using AuditPlatform.Client.Core.ViewModels;
@@ -30,8 +32,16 @@ public partial class App : Application
         builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddDbContext<LocalDbContext>(o => o.UseSqlite($"Data Source={options.DatabasePath}"));
-        // Sign-in is pending ADR-0005; until then the transport connects without a token and the master answers 401.
-        builder.Services.AddSingleton<ISyncTransport>(_ => new SignalRSyncTransport(options, () => Task.FromResult<string?>(null)));
+        // ADR-0005: the session supplies and renews the access token. The sign-in window comes with the client UI;
+        // until a user has signed in, the session has no token and the master answers 401.
+        builder.Services.AddSingleton<IRefreshTokenStore>(_ => new DpapiRefreshTokenStore(options.DataDirectory));
+        builder.Services.AddSingleton(sp => new AuthSession(new HttpClient { Timeout = TimeSpan.FromSeconds(20) }, options,
+            sp.GetRequiredService<IRefreshTokenStore>(), sp.GetRequiredService<TimeProvider>()));
+        builder.Services.AddSingleton<ISyncTransport>(sp =>
+        {
+            var session = sp.GetRequiredService<AuthSession>();
+            return new SignalRSyncTransport(options, () => session.GetAccessTokenAsync());
+        });
         builder.Services.AddSingleton<ShellViewModel>();
         builder.Services.AddSingleton<MainWindow>();
 
