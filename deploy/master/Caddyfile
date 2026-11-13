@@ -7,10 +7,8 @@
 	@health path /healthz/*
 	respond @health 404
 
-	reverse_proxy 127.0.0.1:5080 {
-		# SignalR uses WebSockets; Caddy proxies upgrades automatically.
-		header_up X-Forwarded-Proto {scheme}
-	}
+	# SignalR uses WebSockets; Caddy proxies upgrades and sets X-Forwarded-* automatically.
+	reverse_proxy 127.0.0.1:5080
 
 	header {
 		Strict-Transport-Security "max-age=31536000"

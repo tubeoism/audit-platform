@@ -88,6 +88,7 @@ log "systemd unit and Caddy"
 install -o root -g root -m 0644 "$HERE/audit-master.service" /etc/systemd/system/audit-master.service
 systemctl daemon-reload
 systemctl enable audit-master.service >/dev/null
+install -d -o caddy -g caddy -m 0755 /var/log/caddy
 sed "s/{\$DOMAIN}/${DOMAIN}/" "$HERE/Caddyfile" > /etc/caddy/Caddyfile
 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 systemctl enable --now caddy && systemctl reload caddy
