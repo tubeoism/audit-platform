@@ -26,6 +26,6 @@ Accounts are held by the master (ASP.NET Core Identity on the master PostgreSQL 
 - **Microsoft Entra ID.** Not used: no dependency on the firm's Microsoft tenant for this application.
 
 ## Consequences
-- The master sends invitation and reset emails through Brevo transactional SMTP (`smtp-relay.brevo.com:587`, STARTTLS) only; daily sign-in does not depend on email. The sender domain (`audit.io.vn`) must be authenticated in Brevo with SPF, DKIM and DMARC records in Cloudflare DNS, so that invitations are not filtered as spam. The Brevo SMTP key is entered on the VM only.
+- The master sends invitation and reset emails through the Brevo transactional email HTTP API (`POST https://api.brevo.com/v3/smtp/email`, API key in the `api-key` header) only; daily sign-in does not depend on email. The sender domain (`audit.io.vn`) must be authenticated in Brevo with SPF, DKIM and DMARC records in Cloudflare DNS, so that invitations are not filtered as spam. The Brevo API key is entered on the VM only. (Changed from SMTP on 2026-11-13: SMTP keys require phone verification on the Brevo account.)
 - Data Protection keys must be backed up with the database; losing them forces every user to re-enrol TOTP.
 - Until this ADR is implemented the master keeps the fail-closed `Pending` scheme and answers 401 to everyone.

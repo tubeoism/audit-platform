@@ -22,15 +22,12 @@ echo "== Cloudflare R2 =="
 ask R2_ACCOUNT_ID        "R2 Account ID"         plain
 ask R2_ACCESS_KEY_ID     "R2 Access Key ID"      plain
 ask R2_SECRET_ACCESS_KEY "R2 Secret Access Key"  secret
-echo "== Brevo SMTP =="
-ask Mail__Host     "SMTP server"            plain  smtp-relay.brevo.com
-ask Mail__Port     "SMTP port"              plain  587
-ask Mail__Username "SMTP login (…@smtp-brevo.com)" plain
-ask Mail__Password "SMTP key"               secret
-ask Mail__From     "Địa chỉ gửi"            plain  no-reply@audit.io.vn
+echo "== Brevo (API key) =="
+ask Mail__BrevoApiKey "Brevo API key (xkeysib-...)" secret
+ask Mail__From        "Địa chỉ gửi"                 plain  no-reply@audit.io.vn
 
 tmp="$(mktemp /etc/audit-master/.master.env.XXXXXX)"; chmod 0600 "$tmp"
-NAMES="R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY Mail__Host Mail__Port Mail__Username Mail__Password Mail__From" \
+NAMES="R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY Mail__BrevoApiKey Mail__From" \
 awk '
   BEGIN { n = split(ENVIRON["NAMES"], k, " "); for (i = 1; i <= n; i++) want[k[i]] = 1 }
   { line = $0; sub(/^# */, "", line); split(line, kv, "=");
