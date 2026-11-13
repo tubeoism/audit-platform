@@ -47,6 +47,7 @@ chown deploy:deploy /home/deploy/.ssh/authorized_keys && chmod 0600 /home/deploy
 log "Activation script and sudo rule (deploy may run only this script as root)"
 install -o root -g root -m 0755 "$HERE/activate-release.sh" /usr/local/sbin/audit-activate-release
 install -o root -g root -m 0755 "$HERE/set-secrets.sh" /usr/local/sbin/audit-set-secrets
+install -o root -g root -m 0755 "$HERE/r2-lock-test.sh" /usr/local/sbin/audit-r2-lock-test
 cat > /etc/sudoers.d/audit-deploy <<'EOF'
 deploy ALL=(root) NOPASSWD: /usr/local/sbin/audit-activate-release *
 EOF

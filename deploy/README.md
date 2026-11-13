@@ -1,6 +1,6 @@
 # Deployment: master on the Oracle Cloud Arm VM
 
-The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://app.audit.io.vn`. Cloudflare DNS is proxied with SSL mode **Full (strict)**. Releases are shipped by the GitHub Actions workflow **Deploy master** after CI passes on `main`. Merging to `main` is the release approval; the `production` environment accepts only `main` and holds the deploy key.
+The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://app.audit.io.vn`. Cloudflare DNS is proxied with SSL mode **Full (strict)**. Releases are shipped by the GitHub Actions workflow **Deploy master** after CI passes on `main`. The `production` environment accepts only `main`, holds the deploy key and requires a reviewer, so each deploy waits for approval in Actions.
 
 | File | Purpose |
 |---|---|
@@ -10,7 +10,7 @@ The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://ap
 | `master/Caddyfile` | Reverse proxy with automatic Let's Encrypt certificate; WebSockets pass through for SignalR |
 | `master/master.env.example` | Variable names the master reads. Real values exist only in `/etc/audit-master/master.env` (root, 0600) |
 | `master/set-secrets.sh` | Installed as `/usr/local/sbin/audit-set-secrets`. Prompts for R2 and Brevo values (hidden input) and writes them into `master.env` |
-| `master/r2-lock-test.sh` | Writes a marker under `audit-archive/archive/` and checks that deleting it returns HTTP 409 |
+| `master/r2-lock-test.sh` | Installed as `/usr/local/sbin/audit-r2-lock-test`. Writes a marker under `audit-archive/archive/` and checks that deleting it returns HTTP 409 |
 
 ## Layout on the VM
 
@@ -32,16 +32,16 @@ The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://ap
 1. Copy `deploy/master/` to the VM and run `sudo bash bootstrap-vm.sh`.
 2. Open TCP 80 and 443 in the OCI security list or NSG.
 3. Generate a deploy key pair, put the public key in `/home/deploy/.ssh/authorized_keys`.
-4. In GitHub, create environment `production` limited to the `main` branch, then add:
+4. In GitHub, create environment `production` limited to the `main` branch with a required reviewer, then add:
    - secret `DEPLOY_SSH_KEY`: the private deploy key
    - secret `DEPLOY_KNOWN_HOSTS`: output of `ssh-keyscan -t ed25519 <vm-ip>`
    - variable `DEPLOY_HOST`: the VM IP
 5. Enter R2 and Brevo values yourself with `sudo audit-set-secrets` (prompts, input hidden). Never commit them.
-6. Run **Deploy master** from the Actions tab, then run `sudo bash r2-lock-test.sh` and expect `PASS`.
+6. Run **Deploy master** from the Actions tab, approve, then run `sudo bash r2-lock-test.sh` and expect `PASS`.
 
 ## Day to day
 
-- Merge to `main`; when CI passes, the deploy runs on its own.
+- Merge to `main`; when CI passes, approve the deploy in Actions.
 - Roll back: `ssh deploy@<vm> sudo /usr/local/sbin/audit-activate-release --rollback`
 - Logs: `journalctl -u audit-master -f`, `/var/log/caddy/audit-master.log`
 
