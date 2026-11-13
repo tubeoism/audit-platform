@@ -1,0 +1,22 @@
+# Reverse proxy for the master. Installed to /etc/caddy/Caddyfile by bootstrap-vm.sh ({$DOMAIN} is substituted).
+# Caddy obtains and renews the Let's Encrypt certificate itself; Cloudflare stays proxied with SSL mode "Full (strict)".
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Health endpoints are for local monitoring only.
+	@health path /healthz/*
+	respond @health 404
+
+	# SignalR uses WebSockets; Caddy proxies upgrades and sets X-Forwarded-* automatically.
+	reverse_proxy 127.0.0.1:5080
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/audit-master.log
+	}
+}
