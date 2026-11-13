@@ -91,6 +91,7 @@ systemctl enable audit-master.service >/dev/null
 install -d -o caddy -g caddy -m 0755 /var/log/caddy
 sed "s/{\$DOMAIN}/${DOMAIN}/" "$HERE/Caddyfile" > /etc/caddy/Caddyfile
 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+chown -R caddy:caddy /var/log/caddy   # validate runs as root and may create the log file
 systemctl enable --now caddy && systemctl reload caddy
 
 log "Host firewall: allow 80/443 (Oracle images ship iptables with REJECT-all)"
