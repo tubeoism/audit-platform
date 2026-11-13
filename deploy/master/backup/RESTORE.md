@@ -9,7 +9,7 @@
 | WAL | Đẩy liên tục (`archive_command`), `archive_timeout = 300`, nên **RPO ≤ 5 phút** |
 | Base backup | Full hằng ngày lúc 02:00 giờ VN (`audit-pg-backup.timer`) |
 | Giữ bản | 30 bản full cùng WAL đi kèm, tức là khôi phục được về mọi thời điểm trong khoảng 30 ngày |
-| Bản bất biến | Ngày 01 hằng tháng chép bản full mới nhất cùng WAL của nó sang `audit-archive/archive/` (có object lock) |
+| Bản bất biến | Ngày 01 hằng tháng chép bản full mới nhất cùng WAL của nó sang `audit-archive/archive/` (object lock 10 năm, nên mỗi bản tháng tồn tại 10 năm và không xoá được) |
 | Mã hoá | libsodium phía client, khoá ở `/etc/wal-g/libsodium.key` (root:postgres 0640). R2 chỉ thấy dữ liệu đã mã hoá |
 | Nén | zstd |
 | Cảnh báo | `audit-pg-backup-check` chạy mỗi giờ. Backup hoặc diễn tập lỗi thì `OnFailure=` gửi mail qua Brevo tới `BACKUP_ALERT_EMAIL` |
@@ -99,3 +99,4 @@ Cần có: khoá giải mã (bản ngoại tuyến), quyền vào Cloudflare (R2
 | Ngày | Loại | Kết quả | Thời gian khôi phục | Ghi chú |
 |---|---|---|---|---|
 | 2026-11-13 | Cluster thử trên VM, prefix `pg-test/` | PASS | 14 s | Kiểm thêm: sai khoá thì bị từ chối, PITR đúng thời điểm, bản copy archive tự khôi phục được, đẩy WAL lỗi thì có cảnh báo |
+| 2026-11-13 | DB thật, sau khi bật archiving | PASS | 13 s | DB mới chỉ có lịch sử migration, chưa có dữ liệu nghiệp vụ. Bản tháng đầu tiên `base_000000010000000000000002` đã chép sang `audit-archive` |
