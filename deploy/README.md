@@ -1,6 +1,6 @@
 # Deployment: master on the Oracle Cloud Arm VM
 
-The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://app.audit.io.vn`. Cloudflare DNS is proxied with SSL mode **Full (strict)**. Releases are shipped by the GitHub Actions workflow **Deploy master** after CI passes on `main`, and each run waits for approval in the `production` environment.
+The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://app.audit.io.vn`. Cloudflare DNS is proxied with SSL mode **Full (strict)**. Releases are shipped by the GitHub Actions workflow **Deploy master** after CI passes on `main`. Merging to `main` is the release approval; the `production` environment accepts only `main` and holds the deploy key.
 
 | File | Purpose |
 |---|---|
@@ -31,16 +31,16 @@ The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://ap
 1. Copy `deploy/master/` to the VM and run `sudo bash bootstrap-vm.sh`.
 2. Open TCP 80 and 443 in the OCI security list or NSG.
 3. Generate a deploy key pair, put the public key in `/home/deploy/.ssh/authorized_keys`.
-4. In GitHub, create environment `production` with a required reviewer, then add:
+4. In GitHub, create environment `production` limited to the `main` branch, then add:
    - secret `DEPLOY_SSH_KEY`: the private deploy key
    - secret `DEPLOY_KNOWN_HOSTS`: output of `ssh-keyscan -t ed25519 <vm-ip>`
    - variable `DEPLOY_HOST`: the VM IP
 5. Enter R2 and Brevo values in `/etc/audit-master/master.env` yourself (`sudo nano`). Never commit them.
-6. Run **Deploy master** from the Actions tab, approve, then run `sudo bash r2-lock-test.sh` and expect `PASS`.
+6. Run **Deploy master** from the Actions tab, then run `sudo bash r2-lock-test.sh` and expect `PASS`.
 
 ## Day to day
 
-- Merge to `main`, CI passes, approve the deploy in Actions.
+- Merge to `main`; when CI passes, the deploy runs on its own.
 - Roll back: `ssh deploy@<vm> sudo /usr/local/sbin/audit-activate-release --rollback`
 - Logs: `journalctl -u audit-master -f`, `/var/log/caddy/audit-master.log`
 

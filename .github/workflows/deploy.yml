@@ -1,7 +1,7 @@
 name: Deploy master
 
-# Runs after CI succeeds on main, or by hand. The `production` environment must have a required reviewer,
-# so nothing reaches the VM without an explicit approval in the Actions UI.
+# Runs after CI succeeds on a push to main, or by hand. Merging to main is the release approval:
+# the `production` environment only accepts the main branch and holds the deploy key.
 on:
   workflow_run:
     workflows: [CI]
