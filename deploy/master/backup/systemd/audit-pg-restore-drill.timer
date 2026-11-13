@@ -1,0 +1,9 @@
+[Unit]
+Description=Monthly restore drill on the 2nd at 03:00 Asia/Ho_Chi_Minh (day after the archive copy)
+
+[Timer]
+OnCalendar=*-*-01 20:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

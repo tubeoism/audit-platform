@@ -10,6 +10,7 @@ The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://ap
 | `master/Caddyfile` | Reverse proxy with automatic Let's Encrypt certificate; WebSockets pass through for SignalR |
 | `master/master.env.example` | Variable names the master reads. Real values exist only in `/etc/audit-master/master.env` (root, 0600) |
 | `master/set-secrets.sh` | Installed as `/usr/local/sbin/audit-set-secrets`. Prompts for R2 and Brevo values (hidden input) and writes them into `master.env` |
+| `master/backup/` | WAL-G continuous archiving and nightly base backups of PostgreSQL to R2 `audit-live`, hourly health check with e-mail alerts, monthly immutable copy to `audit-archive`, monthly restore drill. Setup: `sudo bash backup/backup-setup.sh [--enable]`. Runbook: [`master/backup/RESTORE.md`](master/backup/RESTORE.md) |
 | `master/r2-lock-test.sh` | Installed as `/usr/local/sbin/audit-r2-lock-test`. Writes a marker under `audit-archive/archive/` and checks that deleting it returns HTTP 409 |
 
 ## Layout on the VM
@@ -38,6 +39,7 @@ The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://ap
    - variable `DEPLOY_HOST`: the VM IP
 5. Enter R2 and Brevo values yourself with `sudo audit-set-secrets` (prompts, input hidden). Never commit them.
 6. Run **Deploy master** from the Actions tab, approve, then run `sudo bash r2-lock-test.sh` and expect `PASS`.
+7. Backups: `sudo bash backup/backup-setup.sh --enable` (restarts PostgreSQL once), store the key offline with `sudo audit-walg-key --show`, then run `sudo audit-pg-restore-drill` and expect `RESULT: PASS`.
 
 ## Day to day
 
@@ -45,4 +47,4 @@ The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://ap
 - Roll back: `ssh deploy@<vm> sudo /usr/local/sbin/audit-activate-release --rollback`
 - Logs: `journalctl -u audit-master -f`, `/var/log/caddy/audit-master.log`
 
-Still to come: WAL-G continuous archiving and nightly base backups to `audit-live`, and a restore drill.
+- Backups: `sudo audit-pg-backup-check`; restore procedures in [`master/backup/RESTORE.md`](master/backup/RESTORE.md).

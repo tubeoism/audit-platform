@@ -1,0 +1,13 @@
+[Unit]
+Description=Nightly PostgreSQL base backup to R2 (WAL-G) with retention and monthly archive copy
+After=postgresql.service network-online.target
+Wants=network-online.target
+OnFailure=audit-backup-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/audit-pg-backup
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=6h

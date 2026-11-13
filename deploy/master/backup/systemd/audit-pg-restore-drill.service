@@ -1,0 +1,11 @@
+[Unit]
+Description=Monthly restore drill: restore the latest backup from R2 into a scratch instance and verify it
+After=postgresql.service network-online.target
+Wants=network-online.target
+OnFailure=audit-backup-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/audit-pg-restore-drill
+Nice=10
+TimeoutStartSec=4h
