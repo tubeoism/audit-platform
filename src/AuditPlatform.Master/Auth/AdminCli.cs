@@ -115,15 +115,17 @@ internal static class AdminCli
             }
 
             var result = outcome.Value!;
+            var show = flags.Contains("--show-link");
             await output.WriteLineAsync(result.MailSent
                 ? "OK. Đã gửi e-mail kèm liên kết (hiệu lực 24 giờ)."
-                : "CẢNH BÁO: tài khoản đã tạo nhưng e-mail KHÔNG gửi được (kiểm tra Mail__BrevoApiKey). Chạy lại với --show-link để lấy liên kết.");
-            if (flags.Contains("--show-link"))
+                : "CẢNH BÁO: e-mail KHÔNG gửi được (kiểm tra Mail__BrevoApiKey và sender trên Brevo)."
+                  + (show ? string.Empty : " Chạy lại lệnh với --show-link để lấy liên kết."));
+            if (show)
             {
                 await output.WriteLineAsync($"Liên kết một lần, chỉ chuyển cho đúng người dùng qua kênh an toàn:\n{result.Link}");
             }
 
-            return result.MailSent || flags.Contains("--show-link") ? 0 : 1;
+            return result.MailSent || show ? 0 : 1;
         }
     }
 }

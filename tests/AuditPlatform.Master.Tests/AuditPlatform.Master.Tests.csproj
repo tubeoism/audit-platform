@@ -3,4 +3,8 @@
     <ProjectReference Include="..\..\src\AuditPlatform.Master\AuditPlatform.Master.csproj" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Same throw-away PostgreSQL database fixture as the data tests. -->
+    <Compile Include="..\AuditPlatform.Master.Data.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
+  </ItemGroup>
 </Project>

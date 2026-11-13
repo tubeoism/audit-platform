@@ -48,6 +48,8 @@ log "Activation script and sudo rule (deploy may run only this script as root)"
 install -o root -g root -m 0755 "$HERE/activate-release.sh" /usr/local/sbin/audit-activate-release
 install -o root -g root -m 0755 "$HERE/set-secrets.sh" /usr/local/sbin/audit-set-secrets
 install -o root -g root -m 0755 "$HERE/r2-lock-test.sh" /usr/local/sbin/audit-r2-lock-test
+install -o root -g root -m 0755 "$HERE/auth-key.sh" /usr/local/sbin/audit-auth-key
+install -o root -g root -m 0755 "$HERE/audit-admin.sh" /usr/local/sbin/audit-admin
 cat > /etc/sudoers.d/audit-deploy <<'EOF'
 deploy ALL=(root) NOPASSWD: /usr/local/sbin/audit-activate-release *
 EOF
@@ -118,4 +120,6 @@ Done. Remaining manual steps:
   2. Enter R2 and Brevo values yourself:  sudo audit-set-secrets
   3. Open TCP 80/443 in the OCI security list / NSG for this VM.
   4. Run the first deploy from GitHub Actions (workflow "Deploy master").
+  5. Authentication:  sudo audit-auth-key --init ; sudo audit-auth-key --show  (store the key offline)
+     then invite the first administrator:  sudo audit-admin invite <email> "<name>" --admin
 EOF

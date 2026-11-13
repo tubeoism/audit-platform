@@ -12,7 +12,8 @@ namespace AuditPlatform.Master.Auth;
 /// </summary>
 internal static class AccountPages
 {
-    private static readonly HtmlEncoder E = HtmlEncoder.Default;
+    // Vietnamese text is written as is (the pages are UTF-8); markup characters are still escaped.
+    private static readonly HtmlEncoder E = HtmlEncoder.Create(System.Text.Unicode.UnicodeRanges.All);
 
     public static void MapAccountPages(this WebApplication app)
     {

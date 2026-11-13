@@ -12,7 +12,7 @@ User=audit
 Group=audit
 WorkingDirectory=/opt/audit-master/current/app
 ExecStart=/usr/bin/dotnet /opt/audit-master/current/app/AuditPlatform.Master.dll
-# Secrets (ConnectionStrings__Master, R2 keys, Anthropic API key) live only in this root-owned 0600 file on the VM.
+# Secrets (ConnectionStrings__Master, Auth__MasterKey, Brevo and R2 keys, Anthropic API key) live only in this root-owned 0600 file on the VM.
 EnvironmentFile=/etc/audit-master/master.env
 Environment=ASPNETCORE_ENVIRONMENT=Production
 Environment=ASPNETCORE_URLS=http://127.0.0.1:5080

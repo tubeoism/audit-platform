@@ -84,7 +84,7 @@ public static class EmailTemplates
 
     private static EmailMessage Build(string to, string name, string subject, string vi, string en, string button, Uri link)
     {
-        var e = HtmlEncoder.Default;
+        var e = HtmlEncoder.Create(System.Text.Unicode.UnicodeRanges.All);
         var text = $"Xin chào {name},\n\n{vi}\n\n{link}\n\n---\n\nHello {name},\n\n{en}\n\n{link}\n\nAudit Platform";
         var html = $"""
             <div style="font-family:Segoe UI,Arial,sans-serif;font-size:15px;color:#1f2933;max-width:560px">
