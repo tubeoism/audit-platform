@@ -20,8 +20,16 @@ internal sealed class SyncHub(SyncCoordinator coordinator, IOptions<MasterOption
 
     public async Task<PushResult> Push(Guid engagementId, IReadOnlyList<ChangeEnvelope> changes)
     {
+        ArgumentNullException.ThrowIfNull(changes);
+        if (changes.Count > options.Value.MaxPushBatch)
+        {
+            throw new HubException($"A push carries at most {options.Value.MaxPushBatch} changes.");
+        }
+
         var result = await Guard(() => coordinator.PushAsync(Context.User.GetUserId(), engagementId, changes, Context.ConnectionAborted).AsTask());
-        if (result.Results.Any(r => r.Outcome == ChangeOutcome.Accepted))
+
+        // A flagged conflict is part of the shared record too: everyone has to see it, not only its author.
+        if (result.Results.Any(r => r.Outcome is ChangeOutcome.Accepted or ChangeOutcome.Conflict))
         {
             await Clients.OthersInGroup(GroupName(engagementId)).ChangesAvailable(engagementId, result.Cursor);
         }
@@ -45,7 +53,7 @@ internal sealed class SyncHub(SyncCoordinator coordinator, IOptions<MasterOption
         {
             throw new HubException(ex.Message);
         }
-        catch (NotSupportedException ex)
+        catch (ReplicaAheadOfMasterException ex)
         {
             throw new HubException(ex.Message);
         }

@@ -42,6 +42,10 @@ public partial class App : Application
             var session = sp.GetRequiredService<AuthSession>();
             return new SignalRSyncTransport(options, () => session.GetAccessTokenAsync());
         });
+        // ADR-0004: the replica and the agent share one LocalDbContext per unit of work (a scope).
+        builder.Services.AddScoped<LocalReplica>();
+        builder.Services.AddScoped<ILocalChangeSink>(sp => sp.GetRequiredService<LocalReplica>());
+        builder.Services.AddScoped<SyncAgent>();
         builder.Services.AddSingleton<ShellViewModel>();
         builder.Services.AddSingleton<MainWindow>();
 
@@ -50,7 +54,8 @@ public partial class App : Application
 
         using (var scope = _host.Services.CreateScope())
         {
-            // Local schema; replaced by SQLite migrations once the replica model is fixed by ADR-0004.
+            // Local schema (outbox, replica log, documents). No client is deployed yet; SQLite migrations come with
+            // the first client release, after which the schema can no longer be recreated.
             await scope.ServiceProvider.GetRequiredService<LocalDbContext>().Database.EnsureCreatedAsync();
         }
 

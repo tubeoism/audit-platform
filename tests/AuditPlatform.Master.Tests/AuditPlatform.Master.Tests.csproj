@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\..\src\AuditPlatform.Master\AuditPlatform.Master.csproj" />
+    <!-- The end-to-end sync test drives the master with the client's own transport and replica. -->
+    <ProjectReference Include="..\..\src\AuditPlatform.Client.Core\AuditPlatform.Client.Core.csproj" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
   </ItemGroup>
   <ItemGroup>

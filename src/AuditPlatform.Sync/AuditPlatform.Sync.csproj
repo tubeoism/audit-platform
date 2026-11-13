@@ -1,8 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Sync engine abstraction. The concrete engine is chosen in spike week 1 (ADR-0004).</Description>
+    <Description>Sync model of ADR-0004: field-level operations and the deterministic working-paper reducer shared by master and clients.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\AuditPlatform.Contracts\AuditPlatform.Contracts.csproj" />
+    <ProjectReference Include="..\AuditPlatform.Domain\AuditPlatform.Domain.csproj" />
   </ItemGroup>
 </Project>

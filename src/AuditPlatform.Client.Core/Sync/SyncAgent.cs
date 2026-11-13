@@ -36,7 +36,18 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    /// <summary>Pushes pending changes for one engagement. Returns the number of changes the master accepted or already had.</summary>
+    /// <summary>Pushes, then pulls. Returns what the master took and what it sent back.</summary>
+    public async Task<(int Delivered, int Received)> SyncAsync(Guid engagementId, CancellationToken cancellationToken)
+    {
+        var delivered = await PushPendingAsync(engagementId, cancellationToken);
+        var received = await PullAsync(engagementId, cancellationToken);
+        return (delivered, received);
+    }
+
+    /// <summary>
+    /// Pushes pending changes for one engagement in the order they were made. Returns the number of changes the
+    /// master accepted or already had. Safe to repeat: the master answers a redelivered change as it did the first time.
+    /// </summary>
     public async Task<int> PushPendingAsync(Guid engagementId, CancellationToken cancellationToken)
     {
         if (transport.State != ConnectionState.Online)
@@ -49,7 +60,7 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
         {
             var batch = await db.Outbox
                 .Where(o => o.EngagementId == engagementId && o.State == OutboxState.Pending)
-                .OrderBy(o => o.CreatedAt)
+                .OrderBy(o => o.LocalSequence)
                 .Take(PushBatchSize)
                 .ToListAsync(cancellationToken);
             if (batch.Count == 0)
@@ -59,6 +70,7 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
 
             var result = await transport.PushAsync(engagementId, [.. batch.Select(b => b.ToEnvelope(options.ClientId))], cancellationToken);
             var byId = batch.ToDictionary(b => b.ChangeId);
+            var settled = 0;
             foreach (var r in result.Results)
             {
                 if (!byId.TryGetValue(r.ChangeId, out var row))
@@ -66,6 +78,7 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
                     continue;
                 }
 
+                settled++;
                 row.Attempts++;
                 switch (r.Outcome)
                 {
@@ -79,6 +92,8 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
                         row.LastError = r.Reason;
                         break;
                     case ChangeOutcome.Rejected:
+                        // Kept with its reason: a change refused by the master (for example after the engagement
+                        // was locked) is never lost on the author's laptop and never sent again.
                         row.State = OutboxState.Rejected;
                         row.LastError = r.Reason;
                         break;
@@ -86,9 +101,9 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
             }
 
             await db.SaveChangesAsync(cancellationToken);
-            if (result.Results.Count == 0)
+            if (settled < batch.Count)
             {
-                // Master answered nothing for this batch; stop rather than loop forever.
+                // The master did not answer for every change; stop rather than loop forever. The rest stays pending.
                 return delivered;
             }
         }
@@ -107,6 +122,7 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
         {
             state = new SyncStateRow { EngagementId = engagementId };
             db.SyncState.Add(state);
+            await db.SaveChangesAsync(cancellationToken);
         }
 
         var received = 0;
@@ -114,18 +130,43 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
         do
         {
             page = await transport.PullAsync(engagementId, new SyncCursor(state.LastPulledSequence), PullBatchSize, cancellationToken);
-            if (page.Changes.Count > 0)
-            {
-                await sink.ApplyAsync(engagementId, page.Changes, cancellationToken);
-                received += page.Changes.Count;
-            }
 
-            state.LastPulledSequence = page.Cursor.Sequence;
-            state.LastSyncedAt = clock.GetUtcNow();
-            await db.SaveChangesAsync(cancellationToken);
+            // One transaction per page: the replica and the cursor move together, so a crash in between cannot
+            // apply a page twice or skip one.
+            await using var tx = await db.Database.BeginTransactionAsync(cancellationToken);
+            try
+            {
+                if (page.Changes.Count > 0)
+                {
+                    await sink.ApplyAsync(engagementId, page.Changes, cancellationToken);
+                    received += page.Changes.Count;
+                }
+
+                state.LastPulledSequence = page.Cursor.Sequence;
+                state.LastSyncedAt = clock.GetUtcNow();
+                await db.SaveChangesAsync(cancellationToken);
+                await tx.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                // Whatever the replica had half-applied in memory is discarded with the transaction.
+                db.ChangeTracker.Clear();
+                throw;
+            }
         }
         while (page.HasMore);
 
         return received;
+    }
+
+    /// <summary>Switches the local copy of an engagement to read-only when the master announces the lock.</summary>
+    public async Task MarkLockedAsync(Guid engagementId, CancellationToken cancellationToken)
+    {
+        var engagement = await db.Engagements.FirstOrDefaultAsync(e => e.Id == engagementId, cancellationToken);
+        if (engagement is { IsReadOnly: false })
+        {
+            engagement.IsReadOnly = true;
+            await db.SaveChangesAsync(cancellationToken);
+        }
     }
 }

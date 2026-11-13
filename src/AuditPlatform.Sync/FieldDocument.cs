@@ -1,10 +1,11 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using AuditPlatform.Domain.Engagements;
 using AuditPlatform.Domain.WorkingPapers;
 
-namespace AuditPlatform.Sync.Spike.FieldVersioning;
+namespace AuditPlatform.Sync;
 
 public enum Decision
 {
@@ -13,9 +14,21 @@ public enum Decision
     Rejected = 2,
 }
 
-public readonly record struct ApplyResult(Decision Decision, string? Reason = null)
+/// <summary>A field value written by an accepted change: what it was before and what it is now.</summary>
+public sealed record FieldChange(string Key, string? Before, string After);
+
+/// <summary>Outcome of one change, with what the master needs for the audit trail and for notifying reviewers.</summary>
+public sealed record ApplyResult(Decision Decision, string? Reason = null)
 {
-    public static ApplyResult Ok => new(Decision.Accepted);
+    public static ApplyResult Ok { get; } = new(Decision.Accepted);
+
+    /// <summary>Set when the change wrote a field value.</summary>
+    public FieldChange? Field { get; init; }
+
+    /// <summary>Sign-offs whose seal this change broke; empty for every other change.</summary>
+    public IReadOnlyList<SignOffRecord> BrokenSignOffs { get; init; } = [];
+
+    public bool SealBroken => BrokenSignOffs.Count > 0;
 
     public static ApplyResult Reject(string reason) => new(Decision.Rejected, reason);
 }
@@ -52,6 +65,7 @@ public enum ConflictStatus
 /// </summary>
 public sealed class ConflictState(Guid id, string key, Guid author, string proposedValue, string? masterValue, Guid? masterChangeId)
 {
+    /// <summary>The id of the change that proposed the value.</summary>
     public Guid Id { get; } = id;
     public string Key { get; } = key;
     public Guid Author { get; } = author;
@@ -62,18 +76,23 @@ public sealed class ConflictState(Guid id, string key, Guid author, string propo
     public Guid? ResolvedBy { get; set; }
 }
 
+/// <param name="ChangeId">The master's sign-off change.</param>
 /// <param name="BrokenByChangeId">The content change that broke this seal after it was given; null while the seal holds.</param>
-public sealed record SignOffRecord(EngagementRole Level, Guid SignedBy, string ContentHash, Guid? BrokenByChangeId)
+public sealed record SignOffRecord(Guid ChangeId, EngagementRole Level, Guid SignedBy, string ContentHash, Guid? BrokenByChangeId)
 {
     public bool IsBroken => BrokenByChangeId is not null;
 }
 
 /// <summary>
-/// State of one working paper as a deterministic fold over the master-ordered change log. The master and every
-/// client run this same code over the same log, which is what makes replicas converge. No clocks are involved.
+/// State of one working paper as a deterministic fold over the master-ordered change log (ADR-0004). The master and
+/// every client run this same code over the same log, which is what makes replicas converge. No clocks are involved.
 /// </summary>
 public sealed class FieldDocument(Guid id, Guid engagementId)
 {
+    public const string SealBrokenReason = "Content changed after sign-off: the seal is broken and the working paper is back in review.";
+    public const int MaxKeyLength = 200;
+    public const int MaxTemplateCodeLength = 20;
+
     private readonly SortedDictionary<string, FieldCell> _fields = new(StringComparer.Ordinal);
     private readonly SortedSet<string> _evidence = new(StringComparer.Ordinal);
     private readonly SortedDictionary<Guid, NoteState> _notes = [];
@@ -111,6 +130,11 @@ public sealed class FieldDocument(Guid id, Guid engagementId)
                 return ApplyResult.Reject("Working paper already exists.");
             }
 
+            if (!IsValidKey(create.TemplateCode) || create.TemplateCode.Length > MaxTemplateCodeLength)
+            {
+                return ApplyResult.Reject("Working paper needs a template code from the methodology library.");
+            }
+
             Exists = true;
             TemplateCode = create.TemplateCode;
             TemplateVersion = create.TemplateVersion;
@@ -127,21 +151,21 @@ public sealed class FieldDocument(Guid id, Guid engagementId)
         {
             SetField set => ApplySet(changeId, author, set),
             ResolveConflict resolve => ApplyResolve(changeId, author, resolve),
-            LinkEvidence link => ApplyContent(changeId, () => _evidence.Add(link.ContentHash)),
-            UnlinkEvidence unlink => ApplyContent(changeId, () => _evidence.Remove(unlink.ContentHash)),
+            LinkEvidence link => ApplyEvidence(changeId, link.ContentHash, add: true),
+            UnlinkEvidence unlink => ApplyEvidence(changeId, unlink.ContentHash, add: false),
             RaiseNote raise => ApplyRaise(author, raise),
             RespondNote respond => ApplyRespond(changeId, author, respond),
             ClearNote clear => ApplyClear(author, clear),
             SubmitForReview => ApplySubmit(),
-            SignOffPaper signOff => ApplySignOff(author, signOff),
+            SignOffPaper signOff => ApplySignOff(changeId, author, signOff),
             _ => ApplyResult.Reject($"Unsupported operation {op.GetType().Name}."),
         };
     }
 
-    /// <summary>The existing domain hash (ADR-0003 / design doc 7.2), computed from the merged state.</summary>
+    /// <summary>The domain hash (design doc 7.2), computed from the merged state. This is what a sign-off seals.</summary>
     public string ComputeContentHash()
     {
-        var paper = new WorkingPaper(Id, EngagementId, TemplateCode, TemplateVersion, PreparerId);
+        var paper = new WorkingPaper(Id, EngagementId, Exists ? TemplateCode : "-", TemplateVersion, PreparerId);
         foreach (var (key, cell) in _fields)
         {
             paper.SetField(key, cell.Value);
@@ -155,7 +179,7 @@ public sealed class FieldDocument(Guid id, Guid engagementId)
         return paper.ComputeContentHash();
     }
 
-    /// <summary>Hash of the whole replicated state (content, versions, notes, conflicts, status); used to compare replicas.</summary>
+    /// <summary>Hash of the whole replicated state (content, versions, notes, conflicts, sign-offs, status); used to compare replicas.</summary>
     public string Fingerprint()
     {
         var sb = new StringBuilder();
@@ -182,49 +206,165 @@ public sealed class FieldDocument(Guid id, Guid engagementId)
 
         foreach (var signOff in _signOffs)
         {
-            sb.Append(CultureInfo.InvariantCulture, $"s|{signOff.Level}|{signOff.SignedBy:N}|{signOff.ContentHash}|{signOff.BrokenByChangeId:N}\n");
+            sb.Append(CultureInfo.InvariantCulture, $"s|{signOff.ChangeId:N}|{signOff.Level}|{signOff.SignedBy:N}|{signOff.ContentHash}|{signOff.BrokenByChangeId:N}\n");
         }
 
-        sb.Append(CultureInfo.InvariantCulture, $"h|{_history.Count}");
+        foreach (var revision in _history)
+        {
+            sb.Append(CultureInfo.InvariantCulture, $"h|{revision.ChangeId:N}\n");
+        }
+
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())));
     }
 
-    public const string SealBrokenReason = "Content changed after sign-off: the seal is broken and the working paper is back in review.";
+    /// <summary>Why a sign-off at this level by this reviewer would be refused right now, or null if it would be accepted.</summary>
+    public string? WhySignOffIsRefused(string levelName, Guid reviewer)
+    {
+        if (!Exists)
+        {
+            return "Unknown working paper.";
+        }
+
+        if (!Enum.TryParse<EngagementRole>(levelName, out var level))
+        {
+            return $"Unknown review level '{levelName}'.";
+        }
+
+        var expected = level switch
+        {
+            EngagementRole.ManagerQa => WorkingPaperStatus.ReadyForReview,
+            EngagementRole.JapanDesk => WorkingPaperStatus.ManagerQaSignedOff,
+            _ => (WorkingPaperStatus?)null,
+        };
+        if (expected is null)
+        {
+            return $"{levelName} is not a review level.";
+        }
+
+        if (Status != expected)
+        {
+            return $"Cannot sign off at {levelName} while the working paper is {Status}.";
+        }
+
+        if (reviewer == PreparerId)
+        {
+            return "The preparer cannot review their own working paper.";
+        }
+
+        if (_notes.Values.Any(n => !n.IsCleared))
+        {
+            return "All review notes must be cleared before sign-off.";
+        }
+
+        return OpenConflicts.Any() ? "All flagged conflicts must be resolved before sign-off." : null;
+    }
+
+    // ----- Persistence ----------------------------------------------------------------------------------------------
+
+    /// <summary>The whole state as JSON, for the master's document table and the client's SQLite replica.</summary>
+    public string ToJson() => JsonSerializer.Serialize(new Snapshot(
+        SnapshotVersion, Id, EngagementId, Exists, TemplateCode, TemplateVersion, PreparerId, Status,
+        [.. _fields.Select(f => new FieldSnapshot(f.Key, f.Value.Value, f.Value.ChangeId, f.Value.Author))],
+        [.. _evidence],
+        [.. _notes.Values.Select(n => new NoteSnapshot(n.Id, n.RaisedBy, n.FieldKey, n.Text, n.Responses, n.ClearedBy))],
+        [.. _conflicts.Values.Select(c => new ConflictSnapshot(c.Id, c.Key, c.Author, c.ProposedValue, c.MasterValue, c.MasterChangeId, c.Status, c.ResolvedBy))],
+        _history, _signOffs), FieldPayload.Options);
+
+    /// <summary>Restores a document saved with <see cref="ToJson"/>. Throws <see cref="JsonException"/> on a snapshot it cannot read.</summary>
+    public static FieldDocument FromJson(string json)
+    {
+        var s = JsonSerializer.Deserialize<Snapshot>(json, FieldPayload.Options) ?? throw new JsonException("Empty document snapshot.");
+        if (s.Version != SnapshotVersion)
+        {
+            throw new JsonException($"Unsupported document snapshot version {s.Version}; rebuild the document from the change log.");
+        }
+
+        var doc = new FieldDocument(s.Id, s.EngagementId)
+        {
+            Exists = s.Exists, TemplateCode = s.TemplateCode, TemplateVersion = s.TemplateVersion, PreparerId = s.PreparerId, Status = s.Status,
+        };
+        foreach (var f in s.Fields)
+        {
+            doc._fields[f.Key] = new FieldCell(f.Value, f.ChangeId, f.Author);
+        }
+
+        doc._evidence.UnionWith(s.Evidence);
+        foreach (var n in s.Notes)
+        {
+            var note = new NoteState(n.Id, n.RaisedBy, n.FieldKey, n.Text) { ClearedBy = n.ClearedBy };
+            note.Responses.AddRange(n.Responses);
+            doc._notes[n.Id] = note;
+        }
+
+        foreach (var c in s.Conflicts)
+        {
+            doc._conflicts[c.Id] = new ConflictState(c.Id, c.Key, c.Author, c.ProposedValue, c.MasterValue, c.MasterChangeId)
+            {
+                Status = c.Status, ResolvedBy = c.ResolvedBy,
+            };
+        }
+
+        doc._history.AddRange(s.History);
+        doc._signOffs.AddRange(s.SignOffs);
+        return doc;
+    }
+
+    private const int SnapshotVersion = 1;
+
+    private sealed record Snapshot(
+        int Version, Guid Id, Guid EngagementId, bool Exists, string TemplateCode, int TemplateVersion, Guid PreparerId,
+        WorkingPaperStatus Status, List<FieldSnapshot> Fields, List<string> Evidence, List<NoteSnapshot> Notes,
+        List<ConflictSnapshot> Conflicts, List<FieldRevision> History, List<SignOffRecord> SignOffs);
+
+    private sealed record FieldSnapshot(string Key, string Value, Guid ChangeId, Guid Author);
+
+    private sealed record NoteSnapshot(Guid Id, Guid RaisedBy, string FieldKey, string Text, List<NoteResponse> Responses, Guid? ClearedBy);
+
+    private sealed record ConflictSnapshot(
+        Guid Id, string Key, Guid Author, string ProposedValue, string? MasterValue, Guid? MasterChangeId, ConflictStatus Status, Guid? ResolvedBy);
+
+    // ----- Reducer --------------------------------------------------------------------------------------------------
 
     /// <summary>
     /// Runs a content change. Content stays editable after sign-off (sponsor decision 2026-11-13): if the change
     /// alters the signed content, every standing sign-off is marked broken by this change and the paper returns to
     /// review. Nothing is deleted: the broken sign-offs stay on record with the change that broke them.
     /// </summary>
-    private ApplyResult ApplyContent(Guid changeId, Action mutate)
+    private ApplyResult ApplyContent(Guid changeId, Func<FieldChange?> mutate)
     {
         if (!IsSealed)
         {
-            mutate();
-            return ApplyResult.Ok;
+            return ApplyResult.Ok with { Field = mutate() };
         }
 
         var before = ComputeContentHash();
-        mutate();
+        var field = mutate();
         if (string.Equals(before, ComputeContentHash(), StringComparison.Ordinal))
         {
-            return ApplyResult.Ok;
+            return ApplyResult.Ok with { Field = field };
         }
 
+        var broken = new List<SignOffRecord>();
         for (var i = 0; i < _signOffs.Count; i++)
         {
             if (!_signOffs[i].IsBroken)
             {
                 _signOffs[i] = _signOffs[i] with { BrokenByChangeId = changeId };
+                broken.Add(_signOffs[i]);
             }
         }
 
         Status = WorkingPaperStatus.ReadyForReview;
-        return new ApplyResult(Decision.Accepted, SealBrokenReason);
+        return new ApplyResult(Decision.Accepted, SealBrokenReason) { Field = field, BrokenSignOffs = broken };
     }
 
     private ApplyResult ApplySet(Guid changeId, Guid author, SetField set)
     {
+        if (!IsValidKey(set.Key) || set.Value is null)
+        {
+            return ApplyResult.Reject("A field edit needs a field key and a value.");
+        }
+
         _fields.TryGetValue(set.Key, out var current);
         var basedOnCurrent = set.BaseChangeId == current?.ChangeId;
         var sameValue = current is not null && string.Equals(current.Value, set.Value, StringComparison.Ordinal);
@@ -246,6 +386,11 @@ public sealed class FieldDocument(Guid id, Guid engagementId)
 
     private ApplyResult ApplyResolve(Guid changeId, Guid author, ResolveConflict resolve)
     {
+        if (resolve.Value is null)
+        {
+            return ApplyResult.Reject("A resolution needs the value to keep.");
+        }
+
         if (!_conflicts.TryGetValue(resolve.ConflictId, out var conflict) || conflict.Status != ConflictStatus.Open)
         {
             return ApplyResult.Reject("Conflict is not open.");
@@ -262,14 +407,35 @@ public sealed class FieldDocument(Guid id, Guid engagementId)
         return ApplyContent(changeId, () => Write(conflict.Key, resolve.Value, changeId, author));
     }
 
-    private void Write(string key, string value, Guid changeId, Guid author)
+    private FieldChange Write(string key, string value, Guid changeId, Guid author)
     {
-        _history.Add(new FieldRevision(key, Value(key), value, changeId, author));
+        var before = Value(key);
+        _history.Add(new FieldRevision(key, before, value, changeId, author));
         _fields[key] = new FieldCell(value, changeId, author);
+        return new FieldChange(key, before, value);
+    }
+
+    private ApplyResult ApplyEvidence(Guid changeId, string contentHash, bool add)
+    {
+        if (!IsValidKey(contentHash))
+        {
+            return ApplyResult.Reject("An evidence link needs the content hash of the evidence.");
+        }
+
+        return ApplyContent(changeId, () =>
+        {
+            _ = add ? _evidence.Add(contentHash) : _evidence.Remove(contentHash);
+            return null;
+        });
     }
 
     private ApplyResult ApplyRaise(Guid author, RaiseNote raise)
     {
+        if (!IsValidKey(raise.FieldKey) || string.IsNullOrWhiteSpace(raise.Text))
+        {
+            return ApplyResult.Reject("A review note needs a field and a text.");
+        }
+
         if (_notes.ContainsKey(raise.NoteId))
         {
             return ApplyResult.Reject("Review note already exists.");
@@ -281,6 +447,11 @@ public sealed class FieldDocument(Guid id, Guid engagementId)
 
     private ApplyResult ApplyRespond(Guid changeId, Guid author, RespondNote respond)
     {
+        if (string.IsNullOrWhiteSpace(respond.Response))
+        {
+            return ApplyResult.Reject("A response needs a text.");
+        }
+
         if (!_notes.TryGetValue(respond.NoteId, out var note))
         {
             return ApplyResult.Reject("Unknown review note.");
@@ -333,46 +504,26 @@ public sealed class FieldDocument(Guid id, Guid engagementId)
         return ApplyResult.Ok;
     }
 
-    private ApplyResult ApplySignOff(Guid reviewer, SignOffPaper signOff)
+    private ApplyResult ApplySignOff(Guid changeId, Guid reviewer, SignOffPaper signOff)
     {
-        if (!Enum.TryParse<EngagementRole>(signOff.Level, out var level))
+        if (WhySignOffIsRefused(signOff.Level, reviewer) is { } refusal)
         {
-            return ApplyResult.Reject($"Unknown review level '{signOff.Level}'.");
+            return ApplyResult.Reject(refusal);
         }
 
-        var expected = level switch
-        {
-            EngagementRole.ManagerQa => WorkingPaperStatus.ReadyForReview,
-            EngagementRole.JapanDesk => WorkingPaperStatus.ManagerQaSignedOff,
-            _ => (WorkingPaperStatus?)null,
-        };
-        if (expected is null || Status != expected)
-        {
-            return ApplyResult.Reject($"Cannot sign off at {signOff.Level} while the working paper is {Status}.");
-        }
-
-        if (reviewer == PreparerId)
-        {
-            return ApplyResult.Reject("The preparer cannot review their own working paper.");
-        }
-
-        if (_notes.Values.Any(n => !n.IsCleared))
-        {
-            return ApplyResult.Reject("All review notes must be cleared before sign-off.");
-        }
-
-        if (OpenConflicts.Any())
-        {
-            return ApplyResult.Reject("All flagged conflicts must be resolved before sign-off.");
-        }
-
+        // A replica that replays the sign-off recomputes the hash here; a mismatch stops it instead of letting it drift.
         if (!string.Equals(signOff.ContentHash, ComputeContentHash(), StringComparison.Ordinal))
         {
             return ApplyResult.Reject("Signed content hash does not match the working paper.");
         }
 
-        _signOffs.Add(new SignOffRecord(level, reviewer, signOff.ContentHash, BrokenByChangeId: null));
+        var level = Enum.Parse<EngagementRole>(signOff.Level);
+        _signOffs.Add(new SignOffRecord(changeId, level, reviewer, signOff.ContentHash, BrokenByChangeId: null));
         Status = level == EngagementRole.ManagerQa ? WorkingPaperStatus.ManagerQaSignedOff : WorkingPaperStatus.JapanDeskSignedOff;
         return ApplyResult.Ok;
     }
+
+    /// <summary>Keys, template codes and evidence hashes are identifiers: short, and free of control characters.</summary>
+    private static bool IsValidKey(string? key) =>
+        !string.IsNullOrWhiteSpace(key) && key.Length <= MaxKeyLength && !key.Any(char.IsControl);
 }

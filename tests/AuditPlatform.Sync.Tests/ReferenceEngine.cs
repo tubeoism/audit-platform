@@ -1,16 +1,15 @@
 using AuditPlatform.Contracts.Sync;
 using AuditPlatform.Domain.Engagements;
+using AuditPlatform.Master.Sync;
 
-namespace AuditPlatform.Sync.Spike.FieldVersioning;
+namespace AuditPlatform.Sync.Tests;
 
 /// <summary>
-/// Candidate (a): field-level versioning with master arbitration. The master orders all changes, decides each one
-/// with <see cref="FieldDocument"/>, and serves the ordered log back. State lives in memory: this is the spike, the
-/// durable store comes with the implementation.
+/// Reference model of the master: the rules of ADR-0004 over an in-memory log, in about a hundred lines. The durable
+/// PostgreSQL engine must behave exactly like it; the scenarios run against both and S11 compares them change for change.
 /// </summary>
-public sealed class InMemoryFieldSyncEngine(TimeProvider clock) : IDocumentSyncEngine
+internal sealed class ReferenceEngine : IDocumentSyncEngine
 {
-    private static readonly Guid MasterClientId = Guid.Empty;
     private readonly Dictionary<Guid, EngagementState> _engagements = [];
     private readonly Lock _gate = new();
 
@@ -18,16 +17,10 @@ public sealed class InMemoryFieldSyncEngine(TimeProvider clock) : IDocumentSyncE
 
     public ValueTask<PushResult> ApplyAsync(Guid engagementId, IReadOnlyList<ChangeEnvelope> changes, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(changes);
         lock (_gate)
         {
             var state = State(engagementId);
-            var results = new List<ChangeResult>(changes.Count);
-            foreach (var change in changes)
-            {
-                results.Add(Admit(state, change, fromMaster: false));
-            }
-
+            var results = changes.Select(change => Admit(state, change, fromMaster: false)).ToList();
             return ValueTask.FromResult(new PushResult(results, new SyncCursor(state.Log.Count)));
         }
     }
@@ -44,14 +37,22 @@ public sealed class InMemoryFieldSyncEngine(TimeProvider clock) : IDocumentSyncE
         }
     }
 
-    /// <summary>Online-only: the caller has passed the TOTP step-up (ADR-0005). The master computes the hash it seals.</summary>
-    public ChangeResult SignOff(Guid engagementId, Guid documentId, EngagementRole level, Guid reviewer)
+    public SignOffAttempt SignOff(Guid engagementId, Guid documentId, EngagementRole level, Guid reviewer)
     {
         lock (_gate)
         {
             var state = State(engagementId);
-            var hash = state.Document(documentId, engagementId).ComputeContentHash();
-            return Admit(state, MasterEnvelope(engagementId, documentId, reviewer, new SignOffPaper(level.ToString(), hash)), fromMaster: true);
+            var doc = state.Document(documentId, engagementId);
+            if (doc.WhySignOffIsRefused(level.ToString(), reviewer) is { } refusal)
+            {
+                return new SignOffAttempt(SignOffStatus.Refused, refusal, Guid.Empty, null, new SyncCursor(state.Log.Count));
+            }
+
+            var hash = doc.ComputeContentHash();
+            var envelope = new ChangeEnvelope(Guid.NewGuid(), engagementId, documentId, reviewer, Guid.Empty, DateTimeOffset.UtcNow,
+                FieldPayload.Kind, FieldPayload.Encode(new SignOffPaper(level.ToString(), hash)));
+            Admit(state, envelope, fromMaster: true);
+            return new SignOffAttempt(SignOffStatus.SignedOff, null, envelope.ChangeId, hash, new SyncCursor(state.Log.Count));
         }
     }
 
@@ -63,15 +64,21 @@ public sealed class InMemoryFieldSyncEngine(TimeProvider clock) : IDocumentSyncE
         }
     }
 
-    public IReadOnlyList<Guid> DocumentIds(Guid engagementId)
+    public FieldDocument Replay(Guid engagementId, Guid documentId)
     {
         lock (_gate)
         {
-            return [.. State(engagementId).Docs.Keys.Order()];
+            var doc = new FieldDocument(documentId, engagementId);
+            foreach (var change in State(engagementId).Log.Where(c => c.DocumentId == documentId))
+            {
+                doc.Apply(change.ChangeId, change.AuthorUserId, FieldPayload.Decode(change.Payload));
+            }
+
+            return doc;
         }
     }
 
-    public int LogLength(Guid engagementId)
+    public long Head(Guid engagementId)
     {
         lock (_gate)
         {
@@ -83,24 +90,25 @@ public sealed class InMemoryFieldSyncEngine(TimeProvider clock) : IDocumentSyncE
     {
         if (state.Seen.TryGetValue(change.ChangeId, out var earlier))
         {
-            // A redelivery must not turn a flagged conflict or a rejection into "delivered".
             return earlier.Outcome == ChangeOutcome.Accepted ? earlier with { Outcome = ChangeOutcome.Duplicate } : earlier;
         }
 
         ChangeResult result;
-        FieldOp op;
+        FieldOp? op = null;
         try
         {
             op = FieldPayload.Decode(change.Payload);
         }
-        catch (System.Text.Json.JsonException e)
+        catch (System.Text.Json.JsonException)
         {
-            result = new ChangeResult(change.ChangeId, ChangeOutcome.Rejected, $"Malformed payload: {e.Message}");
-            state.Seen[change.ChangeId] = result;
-            return result;
+            // Decided below.
         }
 
-        if (op.MasterOnly && !fromMaster)
+        if (op is null)
+        {
+            result = new ChangeResult(change.ChangeId, ChangeOutcome.Rejected, "Malformed field-v1 payload.");
+        }
+        else if (op.MasterOnly && !fromMaster)
         {
             result = new ChangeResult(change.ChangeId, ChangeOutcome.Rejected, "This operation needs an online, stepped-up session on the master.");
         }
@@ -115,17 +123,13 @@ public sealed class InMemoryFieldSyncEngine(TimeProvider clock) : IDocumentSyncE
             }, decided.Reason);
             if (decided.Decision != Decision.Rejected)
             {
-                // Accepted changes and flagged conflicts are both part of the shared record; rejections are not.
-                state.Log.Add(change);
+                state.Log.Add(change with { Sequence = state.Log.Count + 1, ReceivedAt = DateTimeOffset.UtcNow });
             }
         }
 
         state.Seen[change.ChangeId] = result;
         return result;
     }
-
-    private ChangeEnvelope MasterEnvelope(Guid engagementId, Guid documentId, Guid actor, FieldOp op) =>
-        new(Guid.NewGuid(), engagementId, documentId, actor, MasterClientId, clock.GetUtcNow(), FieldPayload.Kind, FieldPayload.Encode(op));
 
     private EngagementState State(Guid engagementId)
     {

@@ -299,6 +299,76 @@ namespace AuditPlatform.Master.Data.Migrations
                     b.ToTable("evidence_objects", (string)null);
                 });
 
+            modelBuilder.Entity("AuditPlatform.Master.Data.Entities.NotificationRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempts");
+
+                    b.Property<Guid>("ChangeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("change_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("document_id");
+
+                    b.Property<Guid>("EngagementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("engagement_id");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("kind");
+
+                    b.Property<DateTimeOffset?>("LastAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_attempt_at");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(400)
+                        .HasColumnType("character varying(400)")
+                        .HasColumnName("last_error");
+
+                    b.Property<Guid>("RecipientUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("recipient_user_id");
+
+                    b.Property<DateTimeOffset?>("SentAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("sent_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_notifications");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_notifications_created_at")
+                        .HasFilter("sent_at IS NULL");
+
+                    b.HasIndex("EngagementId")
+                        .HasDatabaseName("ix_notifications_engagement_id");
+
+                    b.HasIndex("RecipientUserId", "CreatedAt")
+                        .HasDatabaseName("ix_notifications_recipient_user_id_created_at");
+
+                    b.ToTable("notifications", (string)null);
+                });
+
             modelBuilder.Entity("AuditPlatform.Master.Data.Entities.ProcedureTemplateRow", b =>
                 {
                     b.Property<string>("Code")
@@ -560,6 +630,112 @@ namespace AuditPlatform.Master.Data.Migrations
                     b.ToTable("step_up_grants", (string)null);
                 });
 
+            modelBuilder.Entity("AuditPlatform.Master.Data.Entities.SyncDocumentRow", b =>
+                {
+                    b.Property<Guid>("DocumentId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("document_id");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character(64)")
+                        .HasColumnName("content_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("EngagementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("engagement_id");
+
+                    b.Property<long>("LastSequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("last_sequence");
+
+                    b.Property<int>("OpenConflicts")
+                        .HasColumnType("integer")
+                        .HasColumnName("open_conflicts");
+
+                    b.Property<Guid>("PreparerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("preparer_id");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("state");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("TemplateCode")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("template_code");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("DocumentId")
+                        .HasName("pk_sync_documents");
+
+                    b.HasIndex("EngagementId")
+                        .HasDatabaseName("ix_sync_documents_engagement_id");
+
+                    b.ToTable("sync_documents", (string)null);
+                });
+
+            modelBuilder.Entity("AuditPlatform.Master.Data.Entities.SyncReceiptRow", b =>
+                {
+                    b.Property<Guid>("ChangeId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("change_id");
+
+                    b.Property<Guid>("AuthorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("author_user_id");
+
+                    b.Property<Guid>("DocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("document_id");
+
+                    b.Property<Guid>("EngagementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("engagement_id");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("received_at");
+
+                    b.Property<long?>("Sequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("sequence");
+
+                    b.HasKey("ChangeId")
+                        .HasName("pk_sync_receipts");
+
+                    b.HasIndex("EngagementId")
+                        .HasDatabaseName("ix_sync_receipts_engagement_id");
+
+                    b.ToTable("sync_receipts", (string)null);
+                });
+
             modelBuilder.Entity("AuditPlatform.Master.Data.Entities.UserRow", b =>
                 {
                     b.Property<Guid>("Id")
@@ -723,6 +899,16 @@ namespace AuditPlatform.Master.Data.Migrations
                         .HasConstraintName("fk_evidence_intake_evidence_objects_hash");
                 });
 
+            modelBuilder.Entity("AuditPlatform.Master.Data.Entities.NotificationRow", b =>
+                {
+                    b.HasOne("AuditPlatform.Master.Data.Entities.EngagementRow", null)
+                        .WithMany()
+                        .HasForeignKey("EngagementId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_notifications_engagements_engagement_id");
+                });
+
             modelBuilder.Entity("AuditPlatform.Master.Data.Entities.RecoveryCodeRow", b =>
                 {
                     b.HasOne("AuditPlatform.Master.Data.Entities.UserRow", null)
@@ -768,6 +954,26 @@ namespace AuditPlatform.Master.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_step_up_grants_users_user_id");
+                });
+
+            modelBuilder.Entity("AuditPlatform.Master.Data.Entities.SyncDocumentRow", b =>
+                {
+                    b.HasOne("AuditPlatform.Master.Data.Entities.EngagementRow", null)
+                        .WithMany()
+                        .HasForeignKey("EngagementId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_sync_documents_engagements_engagement_id");
+                });
+
+            modelBuilder.Entity("AuditPlatform.Master.Data.Entities.SyncReceiptRow", b =>
+                {
+                    b.HasOne("AuditPlatform.Master.Data.Entities.EngagementRow", null)
+                        .WithMany()
+                        .HasForeignKey("EngagementId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_sync_receipts_engagements_engagement_id");
                 });
 
             modelBuilder.Entity("AuditPlatform.Master.Data.Entities.UserTokenRow", b =>

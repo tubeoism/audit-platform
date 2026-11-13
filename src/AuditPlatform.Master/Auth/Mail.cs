@@ -14,7 +14,7 @@ public interface IEmailSender
 
 public sealed class EmailDeliveryException(string message, Exception? inner = null) : Exception(message, inner);
 
-/// <summary>Brevo transactional e-mail over the HTTP API (ADR-0005). Used for invitations and resets only.</summary>
+/// <summary>Brevo transactional e-mail over the HTTP API (ADR-0005). Used for invitations, resets and review notifications.</summary>
 public sealed class BrevoEmailSender(HttpClient http, IOptions<MailOptions> options) : IEmailSender
 {
     private static readonly Uri Endpoint = new("https://api.brevo.com/v3/smtp/email");
@@ -78,21 +78,39 @@ public static class EmailTemplates
         $"An administrator has reset your two-factor authentication. Open the link below, enter your current password and scan the new QR code. The link is valid for {Hours(validFor)} hours.",
         "Cài lại xác thực / Re-enrol", link);
 
+    /// <summary>
+    /// Tells a reviewer that signed content was edited (ADR-0004). Carries no working-paper content: e-mail leaves the
+    /// platform, so the message only says where to look.
+    /// </summary>
+    public static EmailMessage SealBroken(string to, string name, string engagementCode, string templateCode, string changedBy, DateTimeOffset at)
+    {
+        var when = at.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'", System.Globalization.CultureInfo.InvariantCulture);
+        return Build(to, name,
+            $"Giấy tờ làm việc {templateCode} ({engagementCode}) bị sửa sau khi ký duyệt / Working paper {templateCode} ({engagementCode}) was edited after sign-off",
+            $"Giấy tờ làm việc {templateCode} của hợp đồng {engagementCode} đã được {changedBy} sửa nội dung lúc {when}, sau khi đã ký duyệt. Chữ ký duyệt cũ vẫn được lưu nhưng không còn hiệu lực; giấy tờ đã quay về trạng thái chờ soát xét. Hãy mở Audit Platform để xem thay đổi và ký duyệt lại.",
+            $"Working paper {templateCode} of engagement {engagementCode} was edited by {changedBy} at {when}, after it had been signed off. The earlier sign-off stays on record but no longer stands; the working paper is back in review. Open Audit Platform to see the change and sign off again.",
+            null, null);
+    }
+
     private static string Hours(TimeSpan t) => ((int)Math.Round(t.TotalHours)).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     private static string Minutes(TimeSpan t) => ((int)Math.Round(t.TotalMinutes)).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    private static EmailMessage Build(string to, string name, string subject, string vi, string en, string button, Uri link)
+    private static EmailMessage Build(string to, string name, string subject, string vi, string en, string? button, Uri? link)
     {
         var e = HtmlEncoder.Create(System.Text.Unicode.UnicodeRanges.All);
-        var text = $"Xin chào {name},\n\n{vi}\n\n{link}\n\n---\n\nHello {name},\n\n{en}\n\n{link}\n\nAudit Platform";
+        var textLink = link is null ? "" : $"\n\n{link}";
+        var htmlButton = link is null || button is null ? "" :
+            $"""<p><a href="{e.Encode(link.AbsoluteUri)}" style="display:inline-block;padding:10px 18px;background:#1d4ed8;color:#ffffff;text-decoration:none;border-radius:4px">{e.Encode(button)}</a></p>""";
+        var htmlLink = link is null ? "" : $"""<p style="font-size:13px;color:#52606d">{e.Encode(link.AbsoluteUri)}</p>""";
+        var text = $"Xin chào {name},\n\n{vi}{textLink}\n\n---\n\nHello {name},\n\n{en}{textLink}\n\nAudit Platform";
         var html = $"""
             <div style="font-family:Segoe UI,Arial,sans-serif;font-size:15px;color:#1f2933;max-width:560px">
             <p>Xin chào {e.Encode(name)},</p><p>{e.Encode(vi)}</p>
-            <p><a href="{e.Encode(link.AbsoluteUri)}" style="display:inline-block;padding:10px 18px;background:#1d4ed8;color:#ffffff;text-decoration:none;border-radius:4px">{e.Encode(button)}</a></p>
+            {htmlButton}
             <hr style="border:none;border-top:1px solid #d5d9de">
             <p>Hello {e.Encode(name)},</p><p>{e.Encode(en)}</p>
-            <p style="font-size:13px;color:#52606d">{e.Encode(link.AbsoluteUri)}</p>
+            {htmlLink}
             <p style="font-size:13px;color:#52606d">Audit Platform</p>
             </div>
             """;

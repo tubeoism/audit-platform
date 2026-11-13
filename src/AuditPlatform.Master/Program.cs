@@ -2,6 +2,7 @@ using AuditPlatform.Contracts.Sync;
 using AuditPlatform.Evidence;
 using AuditPlatform.Master;
 using AuditPlatform.Master.Data;
+using AuditPlatform.Master.Notifications;
 using AuditPlatform.Master.Security;
 using AuditPlatform.Master.Sync;
 using AuditPlatform.Sync;
@@ -29,8 +30,13 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IEvidenceStore>(sp =>
     new FileSystemEvidenceStore(sp.GetRequiredService<IOptions<MasterOptions>>().Value.EvidenceRoot));
 builder.Services.AddScoped<IEngagementAccess, EfEngagementAccess>();
-builder.Services.AddSingleton<IDocumentSyncEngine, SyncEngineNotSelected>();
+// ADR-0004: field-level versioning with master arbitration, on PostgreSQL.
+builder.Services.AddScoped<FieldSyncEngine>();
+builder.Services.AddScoped<IDocumentSyncEngine>(sp => sp.GetRequiredService<FieldSyncEngine>());
 builder.Services.AddScoped<SyncCoordinator>();
+builder.Services.AddSingleton<NotificationSignal>();
+builder.Services.AddScoped<NotificationSender>();
+builder.Services.AddHostedService<NotificationDispatcher>();
 
 builder.AddAuditAuthentication();
 
@@ -62,6 +68,7 @@ app.MapHealthChecks("/healthz/ready", new HealthCheckOptions { Predicate = c => 
 app.MapAuthApi();
 app.MapAdminApi();
 app.MapAccountPages();
+app.MapSyncApi();
 
 // A connection ends when its access token expires; the client reconnects with a fresh one, so a revoked session
 // or disabled user cannot keep syncing over a socket opened earlier.

@@ -22,6 +22,20 @@ public sealed class TestClock : TimeProvider
     public override DateTimeOffset GetUtcNow() => _now;
 
     public void Advance(TimeSpan by) => _now += by;
+
+    /// <summary>
+    /// Moves the clock up to the real time (rounded up to a whole TOTP step) if it is behind. SignalR closes a hub
+    /// connection when its access token has expired by the real clock, so tests that hold a connection open need
+    /// tokens that are valid in real time as well.
+    /// </summary>
+    public void CatchUpWithRealTime()
+    {
+        var behind = DateTimeOffset.UtcNow - _now;
+        if (behind > TimeSpan.Zero)
+        {
+            Advance(TimeSpan.FromSeconds(Math.Ceiling(behind.TotalSeconds / 30) * 30));
+        }
+    }
 }
 
 public sealed class FakeMail : IEmailSender
@@ -89,6 +103,8 @@ public sealed class AuthFactory : WebApplicationFactory<Program>, IAsyncLifetime
         builder.UseSetting("Auth:PublicBaseUrl", "https://master.test/");
         builder.UseSetting("Auth:RateLimitPerMinute", "100000");
         builder.UseSetting("Auth:UseHibp", "false");
+        // Tests send notifications on demand, so that what they assert does not depend on a background timer.
+        builder.UseSetting("Master:RunNotificationDispatcher", "false");
         builder.ConfigureTestServices(services =>
         {
             services.RemoveAll<TimeProvider>();

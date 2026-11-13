@@ -7,7 +7,8 @@ namespace AuditPlatform.Master.Sync;
 
 /// <summary>
 /// Policy layer in front of the sync engine. Enforces, in order: membership, engagement lock, payload kind,
-/// author identity. Records each accepted push in the hash-chained audit log. Engine-agnostic by design.
+/// author identity. Records a summary of each push in the hash-chained audit log; the engine records every
+/// individual decision. Engine-agnostic by design.
 /// </summary>
 public sealed class SyncCoordinator(IEngagementAccess access, IDocumentSyncEngine engine, IAuditLog auditLog, TimeProvider clock)
 {
@@ -19,7 +20,7 @@ public sealed class SyncCoordinator(IEngagementAccess access, IDocumentSyncEngin
         if (grant.IsReadOnly)
         {
             return new PushResult(
-                [.. changes.Select(c => new ChangeResult(c.ChangeId, ChangeOutcome.Rejected, "Engagement is locked."))],
+                [.. changes.Select(c => new ChangeResult(c.ChangeId, ChangeOutcome.Rejected, FieldSyncEngine.LockedReason))],
                 SyncCursor.Start);
         }
 

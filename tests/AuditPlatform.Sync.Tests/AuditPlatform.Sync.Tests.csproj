@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>ADR-0004 scenarios S1 to S11 against the durable engine: PostgreSQL master, SQLite replicas, the real sync agent.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AuditPlatform.Sync\AuditPlatform.Sync.csproj" />
+    <ProjectReference Include="..\..\src\AuditPlatform.Client.Core\AuditPlatform.Client.Core.csproj" />
+    <ProjectReference Include="..\..\src\AuditPlatform.Master\AuditPlatform.Master.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Same throw-away PostgreSQL database fixture as the data tests. -->
+    <Compile Include="..\AuditPlatform.Master.Data.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
+  </ItemGroup>
+</Project>

@@ -27,5 +27,6 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="AuditPlatform.Master.Tests" />
+    <InternalsVisibleTo Include="AuditPlatform.Sync.Tests" />
   </ItemGroup>
 </Project>

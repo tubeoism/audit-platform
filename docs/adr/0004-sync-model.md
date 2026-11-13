@@ -1,7 +1,9 @@
 # ADR-0004: Sync model — field-level versioning with master arbitration
 
-- Status: Accepted (2026-11-13, sponsor sign-off after the spike)
-- Spike: `tests/AuditPlatform.Sync.Spike` (29 tests, run by CI with the rest of the solution)
+- Status: Accepted (2026-11-13, sponsor sign-off after the spike); implemented 2026-11-13, see "Implementation"
+- Evidence: scenarios S1 to S11 in `tests/AuditPlatform.Sync.Tests`, run by CI against PostgreSQL and SQLite. The spike
+  project that compared the two candidates (and its YDotNet packages) was removed once the engine took over its scenarios;
+  it is in the history at commit `af4bd0a`.
 
 ## Context
 Working papers are mostly structured fields, and the master is always online. Clients are offline most of the time and
@@ -86,12 +88,36 @@ model does not change.
   review, reviewers must be notified, and the engagement lock remains a hard stop.
 - Cross-field consistency (sample size changed by one person, conclusion by another) is not a sync conflict in either
   model; it is caught by review and by the seal.
-- The master stays fail-closed (`SyncEngineNotSelected`) until the durable engine exists. The spike keeps state in memory.
+- The master accepts only payload kind `field-v1`; anything else is rejected change by change.
 
-## Follow-up for the implementation
-1. Move the reducer and operations to `src/AuditPlatform.Sync`; PostgreSQL store for the log and document state on the
-   master, SQLite replica on the client; write per-change before/after to `audit_log`.
-2. `SyncAgent` currently orders the outbox by the client clock and treats `Duplicate` as delivered. Order by a local
-   sequence instead; the engine already returns the original outcome on redelivery.
-3. Notify reviewers when a seal breaks; conflict list and resolution screen in the client.
-4. Delete the spike project and the YDotNet packages once the engine in `src` has taken over its scenarios.
+## Implementation
+| Part | Where | What it does |
+|---|---|---|
+| Reducer | `src/AuditPlatform.Sync` (`FieldDocument`, `FieldOps`) | The rules above as one deterministic fold. Master and client reference the same assembly. |
+| Master log | `changes` (PostgreSQL) | Accepted and flagged changes per engagement, sequences 1..n without gaps. UPDATE, DELETE and TRUNCATE are rejected by trigger and revoked from the application role. |
+| Master engine | `FieldSyncEngine` | One transaction per push: locks the engagement row, decides each change, appends to `changes`, stores the folded document in `sync_documents`, keeps a receipt per change id in `sync_receipts` (redelivery), writes each decision to `audit_log` with before and after. |
+| Engagement lock | `SyncCoordinator`, and again inside the engine's transaction | A change is decided wholly before the lock or wholly after it; after it, everything is rejected and nothing is recorded. |
+| Sign-off | `POST /api/sync/sign-off` | Needs a live session, the reviewer's role in the engagement (ManagerQa or JapanDesk) and a step-up grant (ADR-0005) for the content hash the master is about to seal. The grant is spent in the sign-off's transaction, and not spent if the paper's own rules refuse. |
+| Broken seal | `FieldSyncEngine`, `NotificationSender` | Audit entry `sync.seal.broken` with the voided sign-offs; a row in `notifications` per reviewer in the same transaction; e-mail with retry (no working-paper content in the mail). Clients also raise `LocalReplica.SealBroken` when they replay the change. |
+| Client replica | `LocalReplica` (SQLite: `replica_log`, `documents`) | Replays the master's log with the same reducer, inside the transaction that advances the pull cursor. Stops with `ReplicaDivergedException` on a gap or on a change it would decide differently. |
+| Client edits | `EngagementWorkspace`, `SyncAgent` | Edits become field-v1 changes in the outbox, based on the version the user was looking at; pushed in the order they were made (local sequence, not the clock). Conflicts and rejections stay in the outbox with the reason. |
+
+Decisions taken while implementing (all within the rules above):
+
+1. The master keeps a materialised document next to the log. It is derived data, written in the same transaction; tests
+   compare it with a replay of the log after every scenario.
+2. A client settles its own pending changes from the log as well as from the push answer, so a lost answer needs no
+   second round trip. Because of this the S11 collision count is 3,988 instead of the spike's 3,971: an author who has
+   seen that their save was flagged no longer chains the next save onto it.
+3. A pull from a cursor beyond the end of the master's log (master restored from an older backup) is refused with an
+   explicit error instead of serving a different history under the same sequence numbers.
+4. Reviewers to notify when a seal breaks: the signers of the voided sign-offs and every member holding ManagerQa or
+   JapanDesk in the engagement, except the person who made the change.
+
+## Open after the implementation
+1. Who may resolve a conflict, raise or clear a note, or edit a paper is not restricted beyond engagement membership
+   (and "only the reviewer who raised a note clears it"). To be fixed with the working-paper UI.
+2. Conflict list, resolution screen and the sync loop (connect, subscribe, push/pull on signal) in the WPF client;
+   SQLite migrations with the first client release.
+3. Rebuild procedure for a replica that diverged or is ahead of a restored master.
+4. No API locks an engagement yet; the engine honours the status as soon as one does.

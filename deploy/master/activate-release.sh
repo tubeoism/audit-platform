@@ -62,11 +62,12 @@ MIGRATE_CONNECTION="$(sed -n 's/^MIGRATE_CONNECTION=//p' /etc/audit-master/migra
 "$TARGET/efbundle" --connection "$MIGRATE_CONNECTION"
 unset MIGRATE_CONNECTION
 
-log "granting application role (audit_log stays append-only for audit_app)"
+log "granting application role (audit_log and changes stay append-only for audit_app)"
 sudo -u postgres psql -v ON_ERROR_STOP=1 -q -d audit_master <<'SQL'
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO audit_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO audit_app;
 REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM audit_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON changes FROM audit_app;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON "__EFMigrationsHistory" FROM audit_app;
 SQL
 
