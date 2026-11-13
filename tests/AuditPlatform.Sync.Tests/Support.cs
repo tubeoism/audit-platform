@@ -84,7 +84,15 @@ internal sealed class MemoryMaster : IMaster
 
     public InMemoryAuditLog AuditLog { get; } = new();
 
-    public Task SeedAsync(Guid engagement, IReadOnlyList<(Guid User, EngagementRole Role)> members) => Task.CompletedTask;
+    public Task SeedAsync(Guid engagement, IReadOnlyList<(Guid User, EngagementRole Role)> members)
+    {
+        foreach (var group in members.GroupBy(m => m.User))
+        {
+            _engine.Roles[group.Key] = [.. group.Select(m => m.Role)];
+        }
+
+        return Task.CompletedTask;
+    }
 
     public async Task<PushResult> PushAsync(Guid user, Guid engagement, IReadOnlyList<ChangeEnvelope> changes) =>
         await _coordinator.PushAsync(user, engagement, changes, TestContext.Current.CancellationToken);

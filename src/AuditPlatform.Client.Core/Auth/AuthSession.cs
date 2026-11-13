@@ -145,6 +145,32 @@ public sealed class AuthSession(HttpClient http, ClientOptions options, IRefresh
             new SignOffRequest(engagementId, workingPaperId, level, stepUp.StepUpToken), accessToken, cancellationToken);
     }
 
+    /// <summary>
+    /// Reads from the master's API with the current session. Null when there is no session, the master cannot be
+    /// reached or it refuses: reading is never a reason to sign the user out.
+    /// </summary>
+    public async Task<T?> GetAsync<T>(string route, CancellationToken cancellationToken)
+        where T : class
+    {
+        if (await GetAccessTokenAsync(cancellationToken) is not { } accessToken)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(options.MasterUrl, route));
+            request.Headers.Authorization = new("Bearer", accessToken);
+            using var response = await http.SendAsync(request, cancellationToken);
+            return response.IsSuccessStatusCode ? await response.Content.ReadFromJsonAsync<T>(cancellationToken) : null;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or System.Text.Json.JsonException
+            || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            return null;
+        }
+    }
+
     public async Task SignOutAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);

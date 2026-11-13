@@ -84,4 +84,57 @@ public sealed class LocalEngagementRow
     public required string ClientName { get; set; }
     public EngagementStatus Status { get; set; }
     public bool IsReadOnly { get; set; }
+    public string ContractReference { get; set; } = "";
+    public DateOnly PeriodStart { get; set; }
+    public DateOnly PeriodEnd { get; set; }
+}
+
+/// <summary>
+/// A member of an engagement as the master last listed them: the name to show next to a change, and the roles that
+/// decide what this laptop offers its own user. The master decides again when the change arrives.
+/// </summary>
+public sealed class LocalMemberRow
+{
+    public Guid EngagementId { get; set; }
+    public Guid UserId { get; set; }
+    public required string DisplayName { get; set; }
+
+    /// <summary>Names of <see cref="EngagementRole"/> values, comma-separated.</summary>
+    public required string Roles { get; set; }
+
+    public IReadOnlySet<EngagementRole> RoleSet() =>
+        Roles.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(r => Enum.TryParse<EngagementRole>(r, out var role) ? role : (EngagementRole?)null)
+            .OfType<EngagementRole>()
+            .ToHashSet();
+}
+
+/// <summary>One version of a procedure from the methodology library, cached so forms work offline.</summary>
+public sealed class LocalTemplateRow
+{
+    public required string Code { get; set; }
+    public int Version { get; set; }
+    public required string Language { get; set; }
+    public required string AreaCode { get; set; }
+    public required string AreaName { get; set; }
+    public required string Title { get; set; }
+    public required string Procedure { get; set; }
+
+    /// <summary>JSON array of the audit-content steps.</summary>
+    public required string AuditContent { get; set; }
+
+    /// <summary>JSON array of the evidence to check.</summary>
+    public required string EvidenceToCheck { get; set; }
+}
+
+/// <summary>
+/// Who last signed in on this laptop. Lets the client open offline with the stored session (ADR-0005) and still
+/// know whose edits it is recording. It holds no credential.
+/// </summary>
+public sealed class LocalProfileRow
+{
+    public int Id { get; set; }
+    public Guid UserId { get; set; }
+    public required string Email { get; set; }
+    public required string DisplayName { get; set; }
 }
