@@ -27,6 +27,11 @@
   <ItemGroup Label="Client">
     <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.2" />
   </ItemGroup>
+  <ItemGroup Label="Spike only (ADR-0004, CRDT candidate)">
+    <PackageVersion Include="YDotNet" Version="0.7.0" />
+    <PackageVersion Include="YDotNet.Native.Linux" Version="0.7.0" />
+    <PackageVersion Include="YDotNet.Native.Win32" Version="0.7.0" />
+  </ItemGroup>
   <ItemGroup Label="Tests">
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.14" />
     <PackageVersion Include="xunit.v3" Version="4.0.3" />
