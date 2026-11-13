@@ -46,6 +46,7 @@ chown deploy:deploy /home/deploy/.ssh/authorized_keys && chmod 0600 /home/deploy
 
 log "Activation script and sudo rule (deploy may run only this script as root)"
 install -o root -g root -m 0755 "$HERE/activate-release.sh" /usr/local/sbin/audit-activate-release
+install -o root -g root -m 0755 "$HERE/set-secrets.sh" /usr/local/sbin/audit-set-secrets
 cat > /etc/sudoers.d/audit-deploy <<'EOF'
 deploy ALL=(root) NOPASSWD: /usr/local/sbin/audit-activate-release *
 EOF
@@ -113,7 +114,7 @@ cat <<EOF
 
 Done. Remaining manual steps:
   1. Add the GitHub Actions deploy public key to /home/deploy/.ssh/authorized_keys
-  2. Edit /etc/audit-master/master.env (R2, Brevo values) yourself:  sudo nano /etc/audit-master/master.env
+  2. Enter R2 and Brevo values yourself:  sudo audit-set-secrets
   3. Open TCP 80/443 in the OCI security list / NSG for this VM.
   4. Run the first deploy from GitHub Actions (workflow "Deploy master").
 EOF

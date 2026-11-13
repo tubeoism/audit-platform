@@ -9,6 +9,7 @@ The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://ap
 | `master/audit-master.service` | systemd unit: unprivileged `audit` user on 127.0.0.1:5080 |
 | `master/Caddyfile` | Reverse proxy with automatic Let's Encrypt certificate; WebSockets pass through for SignalR |
 | `master/master.env.example` | Variable names the master reads. Real values exist only in `/etc/audit-master/master.env` (root, 0600) |
+| `master/set-secrets.sh` | Installed as `/usr/local/sbin/audit-set-secrets`. Prompts for R2 and Brevo values (hidden input) and writes them into `master.env` |
 | `master/r2-lock-test.sh` | Writes a marker under `audit-archive/archive/` and checks that deleting it returns HTTP 409 |
 
 ## Layout on the VM
@@ -35,7 +36,7 @@ The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://ap
    - secret `DEPLOY_SSH_KEY`: the private deploy key
    - secret `DEPLOY_KNOWN_HOSTS`: output of `ssh-keyscan -t ed25519 <vm-ip>`
    - variable `DEPLOY_HOST`: the VM IP
-5. Enter R2 and Brevo values in `/etc/audit-master/master.env` yourself (`sudo nano`). Never commit them.
+5. Enter R2 and Brevo values yourself with `sudo audit-set-secrets` (prompts, input hidden). Never commit them.
 6. Run **Deploy master** from the Actions tab, then run `sudo bash r2-lock-test.sh` and expect `PASS`.
 
 ## Day to day
