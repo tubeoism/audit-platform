@@ -8,7 +8,9 @@ set -euo pipefail
 
 BUCKET="${BUCKET:-audit-archive}"
 ENV_FILE="${ENV_FILE:-/etc/audit-master/master.env}"
-set -a; . "$ENV_FILE"; set +a
+# Read only the R2 values literally (the file also holds a connection string with ';', so it is not sourced).
+getenv() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -n1; }
+R2_ACCOUNT_ID="$(getenv R2_ACCOUNT_ID)"; R2_ACCESS_KEY_ID="$(getenv R2_ACCESS_KEY_ID)"; R2_SECRET_ACCESS_KEY="$(getenv R2_SECRET_ACCESS_KEY)"
 : "${R2_ACCOUNT_ID:?missing}" "${R2_ACCESS_KEY_ID:?missing}" "${R2_SECRET_ACCESS_KEY:?missing}"
 
 ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"

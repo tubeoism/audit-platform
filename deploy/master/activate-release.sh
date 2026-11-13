@@ -56,8 +56,9 @@ chown -R root:root "$TARGET"; chmod -R go-w "$TARGET"
 rm -f "$ARCHIVE"
 
 log "applying migrations as schema owner"
-# shellcheck disable=SC1091
-set -a; . /etc/audit-master/migrate.env; set +a
+# Read the value literally: connection strings contain ';', so the file must not be sourced.
+MIGRATE_CONNECTION="$(sed -n 's/^MIGRATE_CONNECTION=//p' /etc/audit-master/migrate.env)"
+[[ -n "$MIGRATE_CONNECTION" ]] || die "MIGRATE_CONNECTION missing in /etc/audit-master/migrate.env"
 "$TARGET/efbundle" --connection "$MIGRATE_CONNECTION"
 unset MIGRATE_CONNECTION
 
