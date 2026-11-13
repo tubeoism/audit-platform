@@ -1,5 +1,5 @@
 # systemd unit for the master service on the Oracle Cloud Arm VM.
-# Installed by the deploy step (next phase); kept here so the runtime contract is reviewed with the code.
+# Installed by deploy/master/bootstrap-vm.sh; releases live in /opt/audit-master/releases/<id>, "current" points at the live one.
 [Unit]
 Description=Audit Platform master service
 After=network-online.target postgresql.service
@@ -10,8 +10,8 @@ Requires=postgresql.service
 Type=exec
 User=audit
 Group=audit
-WorkingDirectory=/opt/audit-master
-ExecStart=/usr/bin/dotnet /opt/audit-master/AuditPlatform.Master.dll
+WorkingDirectory=/opt/audit-master/current/app
+ExecStart=/usr/bin/dotnet /opt/audit-master/current/app/AuditPlatform.Master.dll
 # Secrets (ConnectionStrings__Master, R2 keys, Anthropic API key) live only in this root-owned 0600 file on the VM.
 EnvironmentFile=/etc/audit-master/master.env
 Environment=ASPNETCORE_ENVIRONMENT=Production

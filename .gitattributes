@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Files executed on the Linux VM must keep LF endings
+*.sh text eol=lf
+deploy/**/Caddyfile text eol=lf
+deploy/**/*.service text eol=lf

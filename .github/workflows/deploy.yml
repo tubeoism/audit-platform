@@ -1,0 +1,90 @@
+name: Deploy master
+
+# Runs after CI succeeds on main, or by hand. The `production` environment must have a required reviewer,
+# so nothing reaches the VM without an explicit approval in the Actions UI.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-master
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04-arm
+    environment:
+      name: production
+      url: https://app.audit.io.vn
+    env:
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Publish master (linux-arm64, framework-dependent)
+        run: dotnet publish src/AuditPlatform.Master -c Release -r linux-arm64 --self-contained false -o out/release/app
+
+      - name: Build migrations bundle
+        run: |
+          dotnet tool restore
+          dotnet restore src/AuditPlatform.Master.Data -r linux-arm64
+          dotnet ef migrations bundle --project src/AuditPlatform.Master.Data --configuration Release \
+            -r linux-arm64 --self-contained -o out/release/efbundle --force
+          out/release/efbundle --help > /dev/null
+
+      - name: Package
+        run: |
+          ID="${SHA::12}-${{ github.run_attempt }}"
+          echo "RELEASE_ID=$ID" >> "$GITHUB_ENV"
+          tar -czf "out/$ID.tar.gz" -C out/release app efbundle
+          ls -lh "out/$ID.tar.gz"
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host vm
+            HostName ${{ vars.DEPLOY_HOST }}
+            User deploy
+            IdentityFile ~/.ssh/deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Upload and activate
+        run: |
+          scp "out/$RELEASE_ID.tar.gz" "vm:/opt/audit-master/incoming/$RELEASE_ID.tar.gz"
+          ssh vm "sudo /usr/local/sbin/audit-activate-release $RELEASE_ID"
+
+      - name: Public health check
+        run: |
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://app.audit.io.vn/ || true)
+            echo "attempt $i: HTTP $code"
+            [[ "$code" =~ ^(2|3|4)[0-9][0-9]$ ]] && exit 0
+            sleep 3
+          done
+          exit 1
+
+      - name: Clean up key
+        if: always()
+        run: rm -f ~/.ssh/deploy
