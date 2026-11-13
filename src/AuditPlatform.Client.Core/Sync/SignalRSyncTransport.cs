@@ -8,11 +8,19 @@ public sealed class SignalRSyncTransport : ISyncTransport, IAsyncDisposable
 {
     private readonly HubConnection _connection;
 
-    public SignalRSyncTransport(ClientOptions options, Func<Task<string?>> accessTokenProvider)
+    /// <param name="options">Client settings; the hub lives under <see cref="ClientOptions.MasterUrl"/>.</param>
+    /// <param name="accessTokenProvider">Asked on every (re)connect, so an expired access token is replaced by a fresh one.</param>
+    /// <param name="configure">Optional transport settings (proxy, test server); applied after the defaults.</param>
+    public SignalRSyncTransport(ClientOptions options, Func<Task<string?>> accessTokenProvider,
+        Action<Microsoft.AspNetCore.Http.Connections.Client.HttpConnectionOptions>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _connection = new HubConnectionBuilder()
-            .WithUrl(new Uri(options.MasterUrl, SyncHubRoutes.Path), o => o.AccessTokenProvider = accessTokenProvider)
+            .WithUrl(new Uri(options.MasterUrl, SyncHubRoutes.Path), o =>
+            {
+                o.AccessTokenProvider = accessTokenProvider;
+                configure?.Invoke(o);
+            })
             .WithAutomaticReconnect()
             .Build();
 

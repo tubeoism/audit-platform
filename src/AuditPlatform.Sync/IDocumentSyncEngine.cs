@@ -3,14 +3,10 @@ using AuditPlatform.Contracts.Sync;
 namespace AuditPlatform.Sync;
 
 /// <summary>
-/// Merges client changes into the master's state for one engagement and serves them back in master order.
-/// Candidates under evaluation (spike week 1):
-/// <list type="bullet">
-/// <item>Field-level versioning with master arbitration and flagged conflicts (plain .NET).</item>
-/// <item>CRDT via bindings (Yrs through YDotNet, or Automerge).</item>
-/// </list>
+/// Merges client changes into the master's state for one engagement and serves them back in master order
+/// (ADR-0004: field-level versioning with master arbitration).
 /// Implementations must be idempotent per <see cref="ChangeEnvelope.ChangeId"/>, must never silently overwrite a
-/// reviewer's note or conclusion, and must not perform authorisation: that is enforced by the master before the call.
+/// reviewer's note or conclusion, and must not decide membership: that is enforced by the master before the call.
 /// </summary>
 public interface IDocumentSyncEngine
 {

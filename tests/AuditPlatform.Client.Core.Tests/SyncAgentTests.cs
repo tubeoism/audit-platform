@@ -50,24 +50,49 @@ public sealed class SyncAgentTests : IDisposable
     }
 
     [Fact]
-    public async Task Push_sends_in_creation_order_and_settles_each_outcome()
+    public async Task Push_sends_in_the_order_the_changes_were_made_whatever_the_clock_says_and_settles_each_outcome()
     {
         var ct = TestContext.Current.CancellationToken;
-        var late = Change(5);
-        var early = Change(1);
+        // The laptop clock went backwards between the saves; the order of the saves is what counts (ADR-0004).
+        var first = Change(5);
+        var second = Change(1);
         var conflicting = Change(3);
-        await _agent.EnqueueAsync(late, ct);
-        await _agent.EnqueueAsync(early, ct);
+        var refused = Change(2);
+        await _agent.EnqueueAsync(first, ct);
+        await _agent.EnqueueAsync(second, ct);
         await _agent.EnqueueAsync(conflicting, ct);
+        await _agent.EnqueueAsync(refused, ct);
         _transport.Outcomes[conflicting.ChangeId] = ChangeOutcome.Conflict;
+        _transport.Outcomes[refused.ChangeId] = ChangeOutcome.Rejected;
 
         var delivered = await _agent.PushPendingAsync(Eng, ct);
 
         Assert.Equal(2, delivered);
-        Assert.Equal([early.ChangeId, conflicting.ChangeId, late.ChangeId], _transport.Pushed.Select(c => c.ChangeId));
-        var remaining = Assert.Single(await _db.Outbox.ToListAsync(ct));
-        Assert.Equal(conflicting.ChangeId, remaining.ChangeId);
-        Assert.Equal(OutboxState.Conflict, remaining.State);
+        Assert.Equal([first.ChangeId, second.ChangeId, conflicting.ChangeId, refused.ChangeId], _transport.Pushed.Select(c => c.ChangeId));
+        var remaining = await _db.Outbox.OrderBy(o => o.LocalSequence).ToListAsync(ct);
+        Assert.Equal([(conflicting.ChangeId, OutboxState.Conflict), (refused.ChangeId, OutboxState.Rejected)], remaining.Select(r => (r.ChangeId, r.State)));
+
+        // Flagged and refused changes are kept for the author but never sent again.
+        Assert.Equal(0, await _agent.PushPendingAsync(Eng, ct));
+        Assert.Equal(4, _transport.Pushed.Count);
+    }
+
+    [Fact]
+    public async Task A_page_that_cannot_be_applied_moves_neither_the_replica_nor_the_cursor()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        _transport.Pages.Enqueue(new PullResult([Change(1)], new SyncCursor(1), HasMore: true));
+        _transport.Pages.Enqueue(new PullResult([Change(2)], new SyncCursor(2), HasMore: false));
+        _sink.FailOnCall = 2;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _agent.PullAsync(Eng, ct));
+
+        Assert.Equal(1, (await _db.SyncState.AsNoTracking().SingleAsync(ct)).LastPulledSequence);
+        // The next attempt asks for the failed page again.
+        _transport.Pages.Enqueue(new PullResult([Change(2)], new SyncCursor(2), HasMore: false));
+        _sink.FailOnCall = 0;
+        Assert.Equal(1, await _agent.PullAsync(Eng, ct));
+        Assert.Equal([0L, 1L, 1L], _transport.PulledFrom);
     }
 
     [Fact]
@@ -127,9 +152,16 @@ public sealed class SyncAgentTests : IDisposable
     private sealed class RecordingSink : ILocalChangeSink
     {
         public List<ChangeEnvelope> Applied { get; } = [];
+        public int FailOnCall { get; set; }
+        private int _calls;
 
         public Task ApplyAsync(Guid engagementId, IReadOnlyList<ChangeEnvelope> changes, CancellationToken cancellationToken)
         {
+            if (++_calls == FailOnCall)
+            {
+                throw new InvalidOperationException("Replica cannot apply this page.");
+            }
+
             Applied.AddRange(changes);
             return Task.CompletedTask;
         }

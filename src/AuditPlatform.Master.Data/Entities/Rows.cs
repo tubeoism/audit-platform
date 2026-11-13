@@ -143,8 +143,9 @@ public sealed class ProcedureTemplateRow
 }
 
 /// <summary>
-/// Engine-neutral change journal: every accepted change, in master order per engagement.
-/// The sync engine (ADR-0004) may keep additional materialised state of its own.
+/// The master's change log (ADR-0004): every change that is part of the shared record, accepted or flagged as a
+/// conflict, in master order per engagement. Sequences start at 1 and have no gaps. Append-only: the table rejects
+/// UPDATE, DELETE and TRUNCATE. Clients rebuild their replica by replaying it.
 /// </summary>
 public sealed class ChangeRow
 {
@@ -158,6 +159,70 @@ public sealed class ChangeRow
     public DateTimeOffset ReceivedAt { get; set; }
     public required string PayloadKind { get; set; }
     public required byte[] Payload { get; set; }
+}
+
+/// <summary>
+/// The master's answer to one change id, kept so a redelivered change gets its original answer again. Rejected
+/// changes have a receipt but no row in <see cref="ChangeRow"/>.
+/// </summary>
+public sealed class SyncReceiptRow
+{
+    public Guid ChangeId { get; set; }
+    public Guid EngagementId { get; set; }
+    public Guid DocumentId { get; set; }
+    public Guid AuthorUserId { get; set; }
+
+    /// <summary>Accepted, Conflict or Rejected.</summary>
+    public required string Outcome { get; set; }
+    public string? Reason { get; set; }
+
+    /// <summary>Position in the change log; null for a rejected change.</summary>
+    public long? Sequence { get; set; }
+    public DateTimeOffset ReceivedAt { get; set; }
+}
+
+/// <summary>
+/// Materialised state of one working paper: the fold of its changes up to <see cref="LastSequence"/>. Derived data,
+/// written in the same transaction as the log; it can always be rebuilt from <see cref="ChangeRow"/>.
+/// </summary>
+public sealed class SyncDocumentRow
+{
+    public Guid DocumentId { get; set; }
+    public Guid EngagementId { get; set; }
+    public required string TemplateCode { get; set; }
+    public Guid PreparerId { get; set; }
+    public required string Status { get; set; }
+    public required string ContentHash { get; set; }
+    public int OpenConflicts { get; set; }
+    public long LastSequence { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+
+    /// <summary>The reducer's state as JSON (text, not jsonb: it is read back whole and never queried).</summary>
+    public required string State { get; set; }
+}
+
+/// <summary>
+/// A message the master owes a person, written in the same transaction as the event that caused it and sent by the
+/// notification dispatcher. Kept after sending as the record that the person was told.
+/// </summary>
+public sealed class NotificationRow
+{
+    public Guid Id { get; set; }
+
+    /// <summary>For example "seal-broken".</summary>
+    public required string Kind { get; set; }
+    public Guid RecipientUserId { get; set; }
+    public Guid EngagementId { get; set; }
+    public Guid DocumentId { get; set; }
+
+    /// <summary>The change that caused the notification.</summary>
+    public Guid ChangeId { get; set; }
+    public Guid ActorUserId { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public int Attempts { get; set; }
+    public DateTimeOffset? LastAttemptAt { get; set; }
+    public string? LastError { get; set; }
+    public DateTimeOffset? SentAt { get; set; }
 }
 
 public sealed class AuditLogRow

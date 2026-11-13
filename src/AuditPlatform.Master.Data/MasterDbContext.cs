@@ -10,6 +10,9 @@ public sealed class MasterDbContext(DbContextOptions<MasterDbContext> options) :
     public DbSet<EngagementMemberRow> EngagementMembers => Set<EngagementMemberRow>();
     public DbSet<ProcedureTemplateRow> ProcedureTemplates => Set<ProcedureTemplateRow>();
     public DbSet<ChangeRow> Changes => Set<ChangeRow>();
+    public DbSet<SyncReceiptRow> SyncReceipts => Set<SyncReceiptRow>();
+    public DbSet<SyncDocumentRow> SyncDocuments => Set<SyncDocumentRow>();
+    public DbSet<NotificationRow> Notifications => Set<NotificationRow>();
     public DbSet<AuditLogRow> AuditLog => Set<AuditLogRow>();
     public DbSet<EvidenceObjectRow> EvidenceObjects => Set<EvidenceObjectRow>();
     public DbSet<EvidenceIntakeRow> EvidenceIntake => Set<EvidenceIntakeRow>();
@@ -122,6 +125,37 @@ public sealed class MasterDbContext(DbContextOptions<MasterDbContext> options) :
             e.HasIndex(x => x.ChangeId).IsUnique();
             e.HasIndex(x => new { x.EngagementId, x.DocumentId });
             e.Property(x => x.PayloadKind).HasMaxLength(40);
+            e.HasOne<EngagementRow>().WithMany().HasForeignKey(x => x.EngagementId);
+        });
+
+        modelBuilder.Entity<SyncReceiptRow>(e =>
+        {
+            e.ToTable("sync_receipts");
+            e.HasKey(x => x.ChangeId);
+            e.Property(x => x.Outcome).HasMaxLength(20);
+            e.HasOne<EngagementRow>().WithMany().HasForeignKey(x => x.EngagementId);
+        });
+
+        modelBuilder.Entity<SyncDocumentRow>(e =>
+        {
+            e.ToTable("sync_documents");
+            e.HasKey(x => x.DocumentId);
+            e.HasIndex(x => x.EngagementId);
+            e.Property(x => x.TemplateCode).HasMaxLength(20);
+            e.Property(x => x.Status).HasMaxLength(30);
+            e.Property(x => x.ContentHash).HasMaxLength(64).IsFixedLength();
+            e.Property(x => x.State).HasColumnType("text");
+            e.HasOne<EngagementRow>().WithMany().HasForeignKey(x => x.EngagementId);
+        });
+
+        modelBuilder.Entity<NotificationRow>(e =>
+        {
+            e.ToTable("notifications");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.CreatedAt).HasFilter("sent_at IS NULL");
+            e.HasIndex(x => new { x.RecipientUserId, x.CreatedAt });
+            e.Property(x => x.Kind).HasMaxLength(30);
+            e.Property(x => x.LastError).HasMaxLength(400);
             e.HasOne<EngagementRow>().WithMany().HasForeignKey(x => x.EngagementId);
         });
 

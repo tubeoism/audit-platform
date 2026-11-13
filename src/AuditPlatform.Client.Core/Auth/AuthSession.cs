@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using AuditPlatform.Contracts.Auth;
+using AuditPlatform.Contracts.Sync;
 
 namespace AuditPlatform.Client.Core.Auth;
 
@@ -121,6 +122,29 @@ public sealed class AuthSession(HttpClient http, ClientOptions options, IRefresh
         return await PostAsync<StepUpResponse>(AuthRoutes.StepUp, new StepUpRequest(code, workingPaperId, contentHash), accessToken, cancellationToken);
     }
 
+    /// <summary>
+    /// Signs a working paper off at one review level: buys the step-up grant with a fresh TOTP code for the content
+    /// the reviewer is looking at (<paramref name="contentHash"/>, from the local replica), then asks the master to
+    /// seal it. The master refuses if it holds different content, so what is sealed is what the reviewer saw.
+    /// </summary>
+    public async Task<AuthResult<SignOffResponse>> SignOffAsync(
+        Guid engagementId, Guid workingPaperId, string level, string contentHash, string code, CancellationToken cancellationToken)
+    {
+        var grant = await RequestSignOffGrantAsync(workingPaperId, contentHash, code, cancellationToken);
+        if (grant.Value is not { } stepUp)
+        {
+            return new AuthResult<SignOffResponse>(null, grant.Error ?? Unreachable);
+        }
+
+        if (await GetAccessTokenAsync(cancellationToken) is not { } accessToken)
+        {
+            return new AuthResult<SignOffResponse>(null, Unreachable);
+        }
+
+        return await PostAsync<SignOffResponse>(SyncRoutes.SignOff,
+            new SignOffRequest(engagementId, workingPaperId, level, stepUp.StepUpToken), accessToken, cancellationToken);
+    }
+
     public async Task SignOutAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -178,7 +202,7 @@ public sealed class AuthSession(HttpClient http, ClientOptions options, IRefresh
             }
 
             // 5xx, 429 and proxy errors say nothing about the session: treat them like an outage and keep it.
-            if (response.StatusCode is not (HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.BadRequest))
+            if (response.StatusCode is not (HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.BadRequest or HttpStatusCode.Conflict))
             {
                 return new AuthResult<T>(null, Unreachable);
             }

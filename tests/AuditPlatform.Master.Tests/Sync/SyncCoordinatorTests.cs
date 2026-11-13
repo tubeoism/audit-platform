@@ -3,7 +3,7 @@ using AuditPlatform.Contracts.Sync;
 using AuditPlatform.Master.Sync;
 using AuditPlatform.Sync;
 
-namespace AuditPlatform.Master.Tests;
+namespace AuditPlatform.Master.Tests.Sync;
 
 public class SyncCoordinatorTests
 {
@@ -102,16 +102,5 @@ public class SyncCoordinatorTests
         Assert.Equal(User, entry.ActorUserId);
         Assert.Contains("\"accepted\":2", entry.PayloadJson, StringComparison.Ordinal);
         Assert.Null(HashChain.Verify(log.Entries));
-    }
-
-    [Fact]
-    public async Task Placeholder_engine_refuses_data_until_a_model_is_selected()
-    {
-        var sut = new SyncCoordinator(new FakeAccess(new EngagementAccess(true, true, false)), new SyncEngineNotSelected(),
-            new InMemoryAuditLog(), TimeProvider.System);
-
-        // No payload kind is supported, so nothing reaches the engine and nothing is accepted.
-        var result = await sut.PushAsync(User, Eng, [Change()], TestContext.Current.CancellationToken);
-        Assert.Equal(ChangeOutcome.Rejected, Assert.Single(result.Results).Outcome);
     }
 }
