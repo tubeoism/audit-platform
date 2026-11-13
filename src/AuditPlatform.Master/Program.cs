@@ -5,11 +5,17 @@ using AuditPlatform.Master.Data;
 using AuditPlatform.Master.Security;
 using AuditPlatform.Master.Sync;
 using AuditPlatform.Sync;
-using Microsoft.AspNetCore.Authentication;
+using AuditPlatform.Master.Auth;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 
-var builder = WebApplication.CreateBuilder(args);
+// `AuditPlatform.Master.dll admin <command>` runs an account-administration command and exits (see AdminCli).
+var adminCommand = args is ["admin", ..] ? args[1..] : null;
+var builder = WebApplication.CreateBuilder(adminCommand is null ? args : []);
+if (adminCommand is not null)
+{
+    builder.Logging.SetMinimumLevel(LogLevel.Warning);
+}
 
 builder.Services.Configure<MasterOptions>(builder.Configuration.GetSection(MasterOptions.Section));
 
@@ -26,10 +32,7 @@ builder.Services.AddScoped<IEngagementAccess, EfEngagementAccess>();
 builder.Services.AddSingleton<IDocumentSyncEngine, SyncEngineNotSelected>();
 builder.Services.AddScoped<SyncCoordinator>();
 
-builder.Services
-    .AddAuthentication(PendingAuthenticationHandler.SchemeName)
-    .AddScheme<AuthenticationSchemeOptions, PendingAuthenticationHandler>(PendingAuthenticationHandler.SchemeName, null);
-builder.Services.AddAuthorization();
+builder.AddAuditAuthentication();
 
 builder.Services.AddSignalR(o =>
 {
@@ -42,6 +45,13 @@ builder.Services.AddHealthChecks()
 
 var app = builder.Build();
 
+if (adminCommand is not null)
+{
+    return await AdminCli.RunAsync(app.Services, adminCommand, Console.Out);
+}
+
+app.UseForwardedHeaders();
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -49,9 +59,16 @@ app.UseAuthorization();
 app.MapHealthChecks("/healthz/live", new HealthCheckOptions { Predicate = _ => false });
 app.MapHealthChecks("/healthz/ready", new HealthCheckOptions { Predicate = c => c.Tags.Contains("ready") });
 
-app.MapHub<SyncHub>(SyncHubRoutes.Path);
+app.MapAuthApi();
+app.MapAdminApi();
+app.MapAccountPages();
 
-app.Run();
+// A connection ends when its access token expires; the client reconnects with a fresh one, so a revoked session
+// or disabled user cannot keep syncing over a socket opened earlier.
+app.MapHub<SyncHub>(SyncHubRoutes.Path, o => o.CloseOnAuthenticationExpiration = true);
+
+await app.RunAsync();
+return 0;
 
 /// <summary>Entry point marker for WebApplicationFactory in integration tests.</summary>
 public partial class Program;

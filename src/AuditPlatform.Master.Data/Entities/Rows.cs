@@ -12,6 +12,96 @@ public sealed class UserRow
     public required string DisplayName { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTimeOffset CreatedAt { get; set; }
+
+    // Authentication (ADR-0005). A user can sign in only when PasswordHash and TotpEnrolledAt are both set.
+    public SystemRole Role { get; set; }
+    public string? PasswordHash { get; set; }
+    public DateTimeOffset? PasswordChangedAt { get; set; }
+
+    /// <summary>TOTP secret, encrypted with the master's secret-protection key. Pending until <see cref="TotpEnrolledAt"/> is set.</summary>
+    public string? TotpSecret { get; set; }
+    public DateTimeOffset? TotpEnrolledAt { get; set; }
+
+    /// <summary>Last accepted TOTP time step; a code from this step or earlier is refused (replay protection).</summary>
+    public long TotpLastStep { get; set; }
+    public int FailedAttempts { get; set; }
+    public DateTimeOffset? LockedUntil { get; set; }
+}
+
+/// <summary>System-wide role. Separate from <see cref="EngagementRole"/>: an admin manages accounts but has no implicit engagement or sign-off rights.</summary>
+public enum SystemRole
+{
+    User = 0,
+    Admin = 1,
+}
+
+public enum UserTokenPurpose
+{
+    Invite = 0,
+    PasswordReset = 1,
+    MfaEnrol = 2,
+}
+
+/// <summary>One-time link sent by e-mail. Only a keyed hash of the token is stored.</summary>
+public sealed class UserTokenRow
+{
+    public Guid Id { get; set; }
+    public Guid UserId { get; set; }
+    public UserTokenPurpose Purpose { get; set; }
+    public required string TokenHash { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset? UsedAt { get; set; }
+    public Guid CreatedBy { get; set; }
+}
+
+public sealed class RecoveryCodeRow
+{
+    public Guid Id { get; set; }
+    public Guid UserId { get; set; }
+    public required string CodeHash { get; set; }
+    public DateTimeOffset? UsedAt { get; set; }
+}
+
+/// <summary>One sign-in on one client installation. Revoking the session refuses its access and refresh tokens at once.</summary>
+public sealed class SessionRow
+{
+    public Guid Id { get; set; }
+    public Guid UserId { get; set; }
+    public Guid InstallationId { get; set; }
+    public required string DeviceName { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset LastRefreshedAt { get; set; }
+    public DateTimeOffset AbsoluteExpiresAt { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
+    public string? RevokedReason { get; set; }
+}
+
+/// <summary>Rotating refresh token of a session. Presenting a token that was already rotated revokes the session.</summary>
+public sealed class RefreshTokenRow
+{
+    public Guid Id { get; set; }
+    public Guid SessionId { get; set; }
+    public required string TokenHash { get; set; }
+    public DateTimeOffset IssuedAt { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset? UsedAt { get; set; }
+    public Guid? ReplacedBy { get; set; }
+}
+
+/// <summary>Single-use proof of a fresh TOTP code, bound to one working paper at one content hash (sign-off step-up).</summary>
+public sealed class StepUpGrantRow
+{
+    public Guid Id { get; set; }
+    public Guid UserId { get; set; }
+    public Guid SessionId { get; set; }
+    public required string TokenHash { get; set; }
+    public required string Purpose { get; set; }
+    public Guid WorkingPaperId { get; set; }
+    public required string ContentHash { get; set; }
+    public DateTimeOffset IssuedAt { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset? ConsumedAt { get; set; }
 }
 
 public sealed class EngagementRow

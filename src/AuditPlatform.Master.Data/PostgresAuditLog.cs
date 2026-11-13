@@ -7,6 +7,7 @@ namespace AuditPlatform.Master.Data;
 /// <summary>
 /// Appends to <c>audit_log</c> under a transaction-scoped advisory lock so concurrent writers chain correctly.
 /// The table itself rejects UPDATE, DELETE and TRUNCATE (see migration InitialSchema).
+/// Pending changes tracked by the same context are saved in the same transaction as the entry.
 /// </summary>
 public sealed class PostgresAuditLog(MasterDbContext db) : IAuditLog
 {
@@ -16,7 +17,9 @@ public sealed class PostgresAuditLog(MasterDbContext db) : IAuditLog
     public async ValueTask<AuditEntry> AppendAsync(AuditEvent auditEvent, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(auditEvent);
-        await using var tx = await db.Database.BeginTransactionAsync(cancellationToken);
+        // Joins the caller's transaction when there is one, so a state change and its audit entry commit together.
+        var ambient = db.Database.CurrentTransaction is not null;
+        await using var tx = ambient ? null : await db.Database.BeginTransactionAsync(cancellationToken);
         await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({AppendLockKey})", cancellationToken);
 
         var last = await db.AuditLog.AsNoTracking()
@@ -39,7 +42,11 @@ public sealed class PostgresAuditLog(MasterDbContext db) : IAuditLog
             Hash = entry.Hash,
         });
         await db.SaveChangesAsync(cancellationToken);
-        await tx.CommitAsync(cancellationToken);
+        if (tx is not null)
+        {
+            await tx.CommitAsync(cancellationToken);
+        }
+
         return entry;
     }
 }

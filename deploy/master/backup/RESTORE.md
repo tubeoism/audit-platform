@@ -52,7 +52,7 @@ Cần có: khoá giải mã (bản ngoại tuyến), quyền vào Cloudflare (R2
 
 1. Tạo VM Ubuntu 24.04 aarch64 mới, chép `deploy/master/` lên và chạy `sudo bash bootstrap-vm.sh`.
 2. `sudo audit-set-secrets`: nhập R2, Brevo, e-mail cảnh báo.
-3. Cài khoá từ bản ngoại tuyến: `sudo audit-walg-key --install`, rồi đối chiếu `--fingerprint` với fingerprint đã ghi.
+3. Cài khoá từ bản ngoại tuyến: `sudo audit-walg-key --install`, rồi đối chiếu `--fingerprint` với fingerprint đã ghi. Cài lại khoá xác thực theo cùng cách: `sudo audit-auth-key --install`. Nếu không còn khoá xác thực thì chạy `sudo audit-auth-key --init`; dữ liệu không mất nhưng mọi người dùng phải cài lại TOTP (`sudo audit-admin reset-mfa <email>`).
 4. Cài WAL-G nhưng **chưa bật archiving**: `sudo bash backup/backup-setup.sh`. Không chạy `--enable` ở bước này, vì cluster mới mà đẩy WAL lên cùng prefix sẽ làm rối lịch sử.
 5. Thay data directory bằng bản trên R2:
    ```bash
