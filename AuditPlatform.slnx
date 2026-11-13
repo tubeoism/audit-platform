@@ -17,5 +17,6 @@
     <Project Path="tests/AuditPlatform.Evidence.Tests/AuditPlatform.Evidence.Tests.csproj" />
     <Project Path="tests/AuditPlatform.Master.Data.Tests/AuditPlatform.Master.Data.Tests.csproj" />
     <Project Path="tests/AuditPlatform.Master.Tests/AuditPlatform.Master.Tests.csproj" />
+    <Project Path="tests/AuditPlatform.Sync.Spike/AuditPlatform.Sync.Spike.csproj" />
   </Folder>
 </Solution>
