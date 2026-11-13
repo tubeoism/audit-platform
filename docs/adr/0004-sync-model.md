@@ -1,6 +1,6 @@
 # ADR-0004: Sync model — field-level versioning with master arbitration
 
-- Status: Proposed (recommended 2026-11-13 after the spike, awaiting sponsor sign-off)
+- Status: Accepted (2026-11-13, sponsor sign-off after the spike)
 - Spike: `tests/AuditPlatform.Sync.Spike` (29 tests, run by CI with the rest of the solution)
 
 ## Context
@@ -16,7 +16,8 @@ Sponsor decisions taken during the spike (2026-11-13):
 
 1. Two people editing the same field: keep both values and wait for a person to decide. No "last one wins".
 2. Editing after sign-off is allowed and breaks the seal automatically.
-3. Simultaneous typing in one text field: open; see "Long text" below.
+3. Option (a) is approved, with its compensating controls for a broken seal. No CRDT is needed; long text is replaced
+   as a whole field (see "Long text" below).
 
 ## Decision
 Adopt (a). Payload kind `field-v1`.
@@ -73,7 +74,7 @@ correctness under collisions, not how often collisions happen in fieldwork.
 
 ## Long text
 Simultaneous typing is technically feasible with (b) but only helps when two people are online in the same paragraph,
-and it is exactly what produces S3. Recommended: whole-field replacement now. If it is wanted later, a text field can
+and it is exactly what produces S3. Decided: whole-field replacement. If it is wanted later, a text field can
 get a live co-editing session between online clients whose result is saved as one ordinary field revision; the sync
 model does not change.
 
