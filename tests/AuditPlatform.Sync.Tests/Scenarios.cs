@@ -61,17 +61,30 @@ public sealed class Scenarios(PostgresFixture pg) : IClassFixture<PostgresFixtur
         Assert.Equal(SignOffStatus.Refused, refused.Status);
         Assert.Contains("conflicts", refused.Reason, StringComparison.Ordinal);
 
-        await w.Manager.Work.ResolveConflictAsync(w.Paper, conflict.Id, "3", Ct);
+        // Deciding is for the person accountable for the paper (its preparer) or the engagement manager: not for the
+        // reviewer, who must stay independent of the content, and not for the other auditor.
+        foreach (var notEntitled in new[] { w.Manager, w.Second })
+        {
+            var attempt = await notEntitled.Work.ResolveConflictAsync(w.Paper, conflict.Id, "3", Ct);
+            await w.SyncAllAsync();
+            var refusedResolve = Assert.Single(await notEntitled.OutboxAsync(), o => o.ChangeId == attempt);
+            Assert.Equal((OutboxState.Rejected, FieldPolicy.NotTheOwner), (refusedResolve.State, refusedResolve.LastError));
+            await notEntitled.Work.DismissRejectedAsync(attempt, Ct);
+        }
+
+        Assert.Single((await w.OnMasterAsync()).OpenConflicts);
+
+        await w.Preparer.Work.ResolveConflictAsync(w.Paper, conflict.Id, "3", Ct);
         await w.SyncAllAsync();
 
         master = await w.OnMasterAsync();
         Assert.Equal("3", master.Value(FieldWorld.Exceptions));
         Assert.Empty(master.OpenConflicts);
-        Assert.Equal(w.Manager.UserId, master.Conflicts[conflict.Id].ResolvedBy);
+        Assert.Equal(w.Preparer.UserId, master.Conflicts[conflict.Id].ResolvedBy);
         Assert.Empty(await w.Second.NeedsAttentionAsync());
-        // The trail shows who set what, from what: 0 -> 2 by the preparer, 2 -> 3 by the manager.
+        // The trail shows who set what, from what: 0 -> 2 by the preparer, 2 -> 3 by the preparer deciding the conflict.
         Assert.Equal(
-            [("0", "2", w.Preparer.UserId), ("2", "3", w.Manager.UserId)],
+            [("0", "2", w.Preparer.UserId), ("2", "3", w.Preparer.UserId)],
             master.History.Where(h => h.Key == FieldWorld.Exceptions).Skip(1).Select(h => (h.Before!, h.After, h.Author)));
         await w.AssertConvergedAsync();
     }
@@ -254,6 +267,40 @@ public sealed class Scenarios(PostgresFixture pg) : IClassFixture<PostgresFixtur
     }
 
     [Theory, InlineData(MasterKind.Memory), InlineData(MasterKind.Postgres)]
+    public async Task Roles_keep_preparation_and_review_apart(MasterKind kind)
+    {
+        using var w = await FieldWorld.StartAsync(kind, pg);
+
+        // A reviewer does not write the content they review, on this paper or a new one.
+        var edit = await w.Manager.SetAsync(w.Paper, FieldWorld.Conclusion, "Rewritten by the reviewer.");
+        var create = await w.Manager.Work.CreatePaperAsync(Guid.NewGuid(), "AUP-CSH-04", 1, Ct);
+        // A preparer does not raise review notes.
+        var note = await w.Second.Work.RaiseNoteAsync(w.Paper, Guid.NewGuid(), FieldWorld.Conclusion, "Looks fine to me.", Ct);
+        // A preparer does not create a paper in someone else's name.
+        var assigned = await w.Second.Work.EnqueueAsync(Guid.NewGuid(), new CreatePaper("AUP-CSH-05", 1, w.Preparer.UserId), Ct);
+        await w.SyncAllAsync();
+
+        var managerOutbox = await w.Manager.OutboxAsync();
+        Assert.All(managerOutbox, o => Assert.Equal((OutboxState.Rejected, FieldPolicy.NotAnEditor), (o.State, o.LastError)));
+        Assert.Equal([edit, create], managerOutbox.Select(o => o.ChangeId));
+        Assert.Equal(
+            [(note, FieldPolicy.NotAReviewer), (assigned, FieldPolicy.NotYourPaper)],
+            (await w.Second.OutboxAsync()).Select(o => (o.ChangeId, o.LastError!)));
+
+        // Nothing of it reached the record, and what each role is for still works.
+        var master = await w.OnMasterAsync();
+        Assert.Equal("No exceptions noted in the sample of 25 items.", master.Value(FieldWorld.Conclusion));
+        Assert.Empty(master.Notes);
+        var raised = Guid.NewGuid();
+        await w.Manager.Work.RaiseNoteAsync(w.Paper, raised, FieldWorld.Conclusion, "State the population.", Ct);
+        await w.SyncAllAsync();
+        await w.Second.Work.RespondAsync(w.Paper, raised, "Population: 412 vouchers.", Ct);
+        await w.SyncAllAsync();
+        Assert.Single((await w.OnMasterAsync()).Notes[raised].Responses);
+        await w.AssertConvergedAsync();
+    }
+
+    [Theory, InlineData(MasterKind.Memory), InlineData(MasterKind.Postgres)]
     public async Task S7_stale_offline_edit_arriving_after_sign_off_is_flagged_and_does_not_break_the_seal(MasterKind kind)
     {
         using var w = await FieldWorld.StartAsync(kind, pg);
@@ -277,7 +324,7 @@ public sealed class Scenarios(PostgresFixture pg) : IClassFixture<PostgresFixtur
         Assert.Empty(w.Manager.SealBreaks);
 
         // Choosing the late value is a content change after sign-off, so it breaks the seal.
-        var resolution = await w.Manager.Work.ResolveConflictAsync(w.Paper, master.OpenConflicts.Single().Id, "3", Ct);
+        var resolution = await w.Preparer.Work.ResolveConflictAsync(w.Paper, master.OpenConflicts.Single().Id, "3", Ct);
         await w.SyncAllAsync();
         Assert.Equal(resolution, (await w.OnMasterAsync()).SignOffs.Single().BrokenByChangeId);
         await w.AssertConvergedAsync();

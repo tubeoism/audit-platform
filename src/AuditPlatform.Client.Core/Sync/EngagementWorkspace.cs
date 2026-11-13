@@ -35,14 +35,58 @@ public sealed class EngagementWorkspace(
     public Task<Guid> CreatePaperAsync(Guid documentId, string templateCode, int templateVersion, CancellationToken cancellationToken) =>
         EnqueueAsync(documentId, new CreatePaper(templateCode, templateVersion, UserId), cancellationToken);
 
-    /// <summary>Replaces the whole value of a field (long text included).</summary>
-    public async Task<Guid> SetFieldAsync(Guid documentId, string key, string value, CancellationToken cancellationToken)
+    /// <summary>Replaces the whole value of a field (long text included), based on what the replica holds right now.</summary>
+    public async Task<Guid> SetFieldAsync(Guid documentId, string key, string value, CancellationToken cancellationToken) =>
+        await SetFieldAsync(documentId, key, value,
+            (await ConfirmedAsync(documentId, cancellationToken)).Fields.TryGetValue(key, out var cell) ? cell.ChangeId : null, cancellationToken);
+
+    /// <summary>
+    /// Replaces the whole value of a field, based on the version that was on the screen when the user started
+    /// typing (<paramref name="seenChangeId"/>, null for an empty field). A form uses this overload: the replica may
+    /// have moved on while the user was typing, and the master must then flag the save instead of taking it.
+    /// </summary>
+    public async Task<Guid> SetFieldAsync(Guid documentId, string key, string value, Guid? seenChangeId, CancellationToken cancellationToken)
     {
         // Chain on the author's own unsent edit, so a series of offline saves of one field is not a conflict with itself.
         var mine = await LastPendingSetAsync(documentId, key, cancellationToken);
-        Guid? baseChange = mine?.ChangeId
-            ?? ((await ConfirmedAsync(documentId, cancellationToken)).Fields.TryGetValue(key, out var cell) ? cell.ChangeId : null);
-        return await EnqueueAsync(documentId, new SetField(key, value, baseChange), cancellationToken);
+        return await EnqueueAsync(documentId, new SetField(key, value, mine?.ChangeId ?? seenChangeId), cancellationToken);
+    }
+
+    /// <summary>
+    /// A working paper as its form shows it: what the master confirmed, the user's own unsent work on top (a paper
+    /// created or submitted offline is already there), and what the master flagged or refused.
+    /// </summary>
+    public async Task<PaperView> ViewPaperAsync(Guid documentId, CancellationToken cancellationToken)
+    {
+        var confirmed = await ConfirmedAsync(documentId, cancellationToken);
+        var rows = await db.Outbox.AsNoTracking()
+            .Where(o => o.EngagementId == EngagementId && o.DocumentId == documentId && o.PayloadKind == FieldPayload.Kind)
+            .OrderBy(o => o.LocalSequence)
+            .ToListAsync(cancellationToken);
+        return PaperView.Build(confirmed, rows);
+    }
+
+    /// <summary>Every working paper of the engagement on this laptop, confirmed or still waiting to be sent.</summary>
+    public async Task<List<PaperView>> ListPapersAsync(CancellationToken cancellationToken)
+    {
+        var states = await db.Documents.AsNoTracking().Where(d => d.EngagementId == EngagementId).Select(d => d.State).ToListAsync(cancellationToken);
+        var outbox = (await db.Outbox.AsNoTracking()
+                .Where(o => o.EngagementId == EngagementId && o.PayloadKind == FieldPayload.Kind)
+                .OrderBy(o => o.LocalSequence)
+                .ToListAsync(cancellationToken))
+            .ToLookup(o => o.DocumentId);
+        var confirmed = states.Select(FieldDocument.FromJson).ToDictionary(d => d.Id);
+        return [.. confirmed.Keys.Union(outbox.Select(g => g.Key))
+            .Select(id => PaperView.Build(confirmed.GetValueOrDefault(id) ?? new FieldDocument(id, EngagementId), [.. outbox[id]]))
+            .Where(v => v.Exists)
+            .OrderBy(v => v.TemplateCode, StringComparer.Ordinal).ThenBy(v => v.Confirmed.Id)];
+    }
+
+    /// <summary>Drops a change the master refused, once its author has read why. Flagged conflicts are not dropped here: a person decides them.</summary>
+    public async Task DismissRejectedAsync(Guid changeId, CancellationToken cancellationToken)
+    {
+        await db.Outbox.Where(o => o.EngagementId == EngagementId && o.ChangeId == changeId && o.State == OutboxState.Rejected)
+            .ExecuteDeleteAsync(cancellationToken);
     }
 
     /// <summary>Closes a flagged conflict by choosing the value to keep, based on the field as the replica shows it now.</summary>

@@ -14,6 +14,12 @@ public sealed class ClientOptions
     /// <summary>Stable id of this installation, written on first run.</summary>
     public Guid ClientId { get; set; }
 
+    /// <summary>Language of the procedure wording on the forms: "vi" or "en". The other one is used when a text is missing.</summary>
+    public string TemplateLanguage { get; set; } = "vi";
+
+    /// <summary>How often the client synchronises when nothing else triggers it (a signal from the master, a local save).</summary>
+    public TimeSpan SyncInterval { get; set; } = TimeSpan.FromSeconds(60);
+
     public string DatabasePath => Path.Combine(DataDirectory, "client.db");
 
     public string EvidenceCachePath => Path.Combine(DataDirectory, "evidence");

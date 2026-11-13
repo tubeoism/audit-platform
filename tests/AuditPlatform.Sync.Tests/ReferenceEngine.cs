@@ -13,6 +13,9 @@ internal sealed class ReferenceEngine : IDocumentSyncEngine
     private readonly Dictionary<Guid, EngagementState> _engagements = [];
     private readonly Lock _gate = new();
 
+    /// <summary>Roles per member, as the durable engine reads them from <c>engagement_members</c>.</summary>
+    public Dictionary<Guid, HashSet<AuditPlatform.Domain.Engagements.EngagementRole>> Roles { get; } = [];
+
     public IReadOnlySet<string> SupportedPayloadKinds { get; } = new HashSet<string> { FieldPayload.Kind };
 
     public ValueTask<PushResult> ApplyAsync(Guid engagementId, IReadOnlyList<ChangeEnvelope> changes, CancellationToken cancellationToken)
@@ -86,7 +89,7 @@ internal sealed class ReferenceEngine : IDocumentSyncEngine
         }
     }
 
-    private static ChangeResult Admit(EngagementState state, ChangeEnvelope change, bool fromMaster)
+    private ChangeResult Admit(EngagementState state, ChangeEnvelope change, bool fromMaster)
     {
         if (state.Seen.TryGetValue(change.ChangeId, out var earlier))
         {
@@ -111,6 +114,11 @@ internal sealed class ReferenceEngine : IDocumentSyncEngine
         else if (op.MasterOnly && !fromMaster)
         {
             result = new ChangeResult(change.ChangeId, ChangeOutcome.Rejected, "This operation needs an online, stepped-up session on the master.");
+        }
+        else if (!fromMaster && FieldPolicy.WhyRefused(op, Roles.GetValueOrDefault(change.AuthorUserId) ?? [],
+                     state.Document(change.DocumentId, change.EngagementId), change.AuthorUserId) is { } notAllowed)
+        {
+            result = new ChangeResult(change.ChangeId, ChangeOutcome.Rejected, notAllowed);
         }
         else
         {

@@ -1,5 +1,7 @@
 using System.Globalization;
+using AuditPlatform.Domain.Engagements;
 using AuditPlatform.Master.Data.Entities;
+using AuditPlatform.Master.Engagements;
 
 namespace AuditPlatform.Master.Auth;
 
@@ -20,10 +22,17 @@ internal static class AdminCli
           devices <email>                            Các máy đã đăng nhập
           revoke <email> [installation-id]           Thu hồi phiên (một máy hoặc tất cả)
 
+          engagement list                            Danh sách engagement và thành viên
+          engagement create <mã> "<khách hàng>" "<số hợp đồng>" <từ yyyy-mm-dd> <đến yyyy-mm-dd>
+          engagement member <mã> <email> <vai trò>   Thêm vai trò: preparer|managerqa|japandesk|engagementmanager
+          engagement unmember <mã> <email> <vai trò> Gỡ vai trò
+          templates import en|vi < tệp.md            Nhập một tệp thủ tục (ia-aup-procedures) từ stdin
+          templates list                             Thư viện thủ tục đang dùng
+
         --show-link in liên kết ra màn hình, dùng khi e-mail không gửi được.
         """;
 
-    public static async Task<int> RunAsync(IServiceProvider services, string[] args, TextWriter output)
+    public static async Task<int> RunAsync(IServiceProvider services, string[] args, TextWriter output, TextReader? input = null)
     {
         var flags = args.Where(a => a.StartsWith("--", StringComparison.Ordinal)).ToHashSet(StringComparer.Ordinal);
         var words = args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToArray();
@@ -83,6 +92,62 @@ internal static class AdminCli
             case ["revoke", var email, .. var rest] when rest.Length == 0 || (rest.Length == 1 && Guid.TryParse(rest[0], out _)):
                 return await WithUserAsync(email, async u => await ReportAsync(
                     await accounts.RevokeSessionsAsync(actor, u.Id, rest.Length == 1 ? Guid.Parse(rest[0]) : null, ct)));
+
+            case ["engagement", "list"]:
+                foreach (var e in await scope.ServiceProvider.GetRequiredService<EngagementService>().ListAllAsync(ct))
+                {
+                    await output.WriteLineAsync($"{e.Code,-16} {e.Status,-10} {e.PeriodStart:yyyy-MM-dd}..{e.PeriodEnd:yyyy-MM-dd}  {e.ClientName}");
+                    foreach (var m in e.Members)
+                    {
+                        await output.WriteLineAsync($"    {m.DisplayName,-28} {string.Join(", ", m.Roles)}");
+                    }
+                }
+
+                return 0;
+
+            case ["engagement", "create", var code, var client, var contract, var from, var to]
+                when DateOnly.TryParseExact(from, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var start)
+                    && DateOnly.TryParseExact(to, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var end):
+            {
+                var created = await scope.ServiceProvider.GetRequiredService<EngagementService>().CreateAsync(actor, code, client, contract, start, end, ct);
+                await output.WriteLineAsync(created.Error is { } error ? $"LỖI [{error.Code}] {error.Message}" : $"OK. Engagement {code} = {created.Value:D}. Đã ghi audit log.");
+                return created.Succeeded ? 0 : 1;
+            }
+
+            case ["engagement", "member" or "unmember", var code, var email, var roleName]
+                when Enum.TryParse<EngagementRole>(roleName, true, out var role) && Enum.IsDefined(role):
+                return await WithUserAsync(email, async u =>
+                {
+                    var changed = await scope.ServiceProvider.GetRequiredService<EngagementService>()
+                        .SetMemberAsync(actor, code, u.Id, role, words[1] == "member", ct);
+                    await output.WriteLineAsync(changed.Error is { } error ? $"LỖI [{error.Code}] {error.Message}"
+                        : changed.Value ? "OK. Đã ghi audit log." : "Không có gì thay đổi.");
+                    return changed.Succeeded ? 0 : 1;
+                });
+
+            case ["templates", "import", var language]:
+            {
+                var markdown = input is null ? "" : await input.ReadToEndAsync(ct);
+                var imported = await scope.ServiceProvider.GetRequiredService<TemplateService>().ImportAsync(actor, markdown, language, ct);
+                if (imported.Error is { } error)
+                {
+                    await output.WriteLineAsync($"LỖI [{error.Code}] {error.Message}");
+                    return 1;
+                }
+
+                var r = imported.Value!;
+                await output.WriteLineAsync($"OK. {r.AreaName}: thêm {r.Added}, không đổi {r.Unchanged}. {string.Join(", ", r.AddedCodes)}");
+                return 0;
+            }
+
+            case ["templates", "list"]:
+                foreach (var t in (await scope.ServiceProvider.GetRequiredService<TemplateService>().ListAsync(ct))
+                    .GroupBy(t => (t.Code, t.Language)).Select(g => g.MaxBy(t => t.Version)!))
+                {
+                    await output.WriteLineAsync($"{t.Code,-12} {t.Language} v{t.Version}  {t.Title}");
+                }
+
+                return 0;
 
             default:
                 await output.WriteLineAsync(Usage);

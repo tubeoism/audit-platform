@@ -9,6 +9,9 @@ public sealed class LocalDbContext(DbContextOptions<LocalDbContext> options) : D
     public DbSet<LocalEngagementRow> Engagements => Set<LocalEngagementRow>();
     public DbSet<LocalDocumentRow> Documents => Set<LocalDocumentRow>();
     public DbSet<ReplicaChangeRow> ReplicaLog => Set<ReplicaChangeRow>();
+    public DbSet<LocalMemberRow> Members => Set<LocalMemberRow>();
+    public DbSet<LocalTemplateRow> Templates => Set<LocalTemplateRow>();
+    public DbSet<LocalProfileRow> Profile => Set<LocalProfileRow>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -55,6 +58,25 @@ public sealed class LocalDbContext(DbContextOptions<LocalDbContext> options) : D
             e.ToTable("engagements");
             e.HasKey(x => x.Id);
             e.Property(x => x.Status).HasConversion<string>();
+        });
+
+        modelBuilder.Entity<LocalMemberRow>(e =>
+        {
+            e.ToTable("engagement_members");
+            e.HasKey(x => new { x.EngagementId, x.UserId });
+        });
+
+        modelBuilder.Entity<LocalTemplateRow>(e =>
+        {
+            e.ToTable("templates");
+            e.HasKey(x => new { x.Code, x.Version, x.Language });
+        });
+
+        modelBuilder.Entity<LocalProfileRow>(e =>
+        {
+            e.ToTable("profile");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).ValueGeneratedNever();
         });
     }
 }

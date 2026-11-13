@@ -39,6 +39,7 @@ jobs:
         run: |
           dotnet tool restore
           dotnet ef migrations has-pending-model-changes --project src/AuditPlatform.Master.Data
+          dotnet ef migrations has-pending-model-changes --project src/AuditPlatform.Client.Core
 
   windows-client:
     runs-on: windows-latest

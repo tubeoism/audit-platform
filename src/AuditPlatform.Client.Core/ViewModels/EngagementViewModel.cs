@@ -1,0 +1,193 @@
+using System.Collections.ObjectModel;
+using AuditPlatform.Client.Core.Directory;
+using AuditPlatform.Client.Core.LocalStore;
+using AuditPlatform.Client.Core.Sync;
+using AuditPlatform.Domain.Engagements;
+using AuditPlatform.Domain.Templates;
+using AuditPlatform.Sync;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using Microsoft.EntityFrameworkCore;
+
+namespace AuditPlatform.Client.Core.ViewModels;
+
+public sealed record PaperItem(Guid Id, string Code, string Title, string StatusText, string PreparerName, string Flags)
+{
+    public string Heading => $"{Code} · {Title}";
+}
+
+public sealed record AreaItem(string Code, string Name)
+{
+    public override string ToString() => $"{Code} · {Name}";
+}
+
+public sealed record TemplateItem(ProcedureTemplate Template)
+{
+    public override string ToString() => $"{Template.Code} · {Template.Title}";
+}
+
+/// <summary>One engagement: its working papers, and starting a new one from the methodology library.</summary>
+public sealed partial class EngagementViewModel : ObservableObject
+{
+    private readonly LocalUnitFactory _units;
+    private readonly SyncLoop _loop;
+    private readonly ClientOptions _options;
+    private readonly CurrentUser _user;
+    private List<ProcedureTemplate> _templates = [];
+
+    public EngagementViewModel(LocalUnitFactory units, SyncLoop loop, ClientOptions options, CurrentUser user, Guid engagementId)
+    {
+        _units = units;
+        _loop = loop;
+        _options = options;
+        _user = user;
+        EngagementId = engagementId;
+    }
+
+    public Guid EngagementId { get; }
+
+    public ObservableCollection<PaperItem> Papers { get; } = [];
+    public ObservableCollection<AreaItem> Areas { get; } = [];
+    public ObservableCollection<TemplateItem> AreaTemplates { get; } = [];
+
+    [ObservableProperty]
+    private string _heading = "";
+
+    [ObservableProperty]
+    private string _detail = "";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(CreatePaperCommand))]
+    private bool _canCreate;
+
+    [ObservableProperty]
+    private AreaItem? _selectedArea;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(CreatePaperCommand))]
+    private TemplateItem? _selectedTemplate;
+
+    [ObservableProperty]
+    private PaperItem? _selectedPaper;
+
+    [ObservableProperty]
+    private WorkingPaperViewModel? _paper;
+
+    [ObservableProperty]
+    private string? _error;
+
+    public async Task ReloadAsync(CancellationToken cancellationToken)
+    {
+        await using var unit = await _units.OpenAsync(cancellationToken);
+        var engagement = await unit.Db.Engagements.AsNoTracking().FirstOrDefaultAsync(e => e.Id == EngagementId, cancellationToken);
+        if (engagement is null)
+        {
+            Heading = "Engagement không còn trong danh sách của bạn";
+            CanCreate = false;
+            return;
+        }
+
+        var members = await unit.Db.Members.AsNoTracking().Where(m => m.EngagementId == EngagementId).ToListAsync(cancellationToken);
+        var names = members.ToDictionary(m => m.UserId, m => m.DisplayName);
+        var roles = members.FirstOrDefault(m => m.UserId == _user.Id)?.RoleSet() ?? new HashSet<EngagementRole>();
+        Heading = $"{engagement.Code} · {engagement.ClientName}";
+        Detail = $"{engagement.Status}{(engagement.IsReadOnly ? " · đã khoá, chỉ xem" : "")} · vai trò của bạn: {(roles.Count == 0 ? "chưa rõ" : string.Join(", ", roles.Order()))}";
+        CanCreate = !engagement.IsReadOnly && FieldPolicy.CanEdit(roles);
+
+        _templates = await DirectoryStore.LatestTemplatesAsync(unit.Db, _options.TemplateLanguage, cancellationToken);
+        var titles = _templates.ToDictionary(t => t.Code, t => t.Title);
+        var areas = _templates.GroupBy(t => t.AreaCode).Select(g => new AreaItem(g.Key, g.First().AreaName)).ToList();
+        if (!Areas.SequenceEqual(areas))
+        {
+            var keep = SelectedArea?.Code;
+            Areas.Clear();
+            areas.ForEach(Areas.Add);
+            SelectedArea = Areas.FirstOrDefault(a => a.Code == keep) ?? Areas.FirstOrDefault();
+        }
+
+        var papers = (await unit.Workspace(EngagementId, _user.Id).ListPapersAsync(cancellationToken)).Select(v => new PaperItem(
+            v.Confirmed.Id, v.TemplateCode, titles.GetValueOrDefault(v.TemplateCode, ""), Texts.Status(v.Status),
+            names.GetValueOrDefault(v.PreparerId, "?"),
+            string.Join(" · ", new[]
+            {
+                v.IsLocalOnly ? "chưa gửi" : v.PendingCount > 0 ? $"{v.PendingCount} thay đổi chưa gửi" : null,
+                v.Confirmed.OpenConflicts.Count() is > 0 and var n ? $"{n} xung đột" : null,
+                v.Attention.Any(a => a.State == OutboxState.Rejected) ? "bị từ chối" : null,
+            }.OfType<string>()))).ToList();
+        if (!Papers.SequenceEqual(papers))
+        {
+            var keep = SelectedPaper?.Id;
+            Papers.Clear();
+            papers.ForEach(Papers.Add);
+            _keepPaper = true;
+            SelectedPaper = Papers.FirstOrDefault(p => p.Id == keep);
+            _keepPaper = false;
+        }
+
+        if (Paper is not null)
+        {
+            await Paper.ReloadAsync(cancellationToken);
+        }
+    }
+
+    private bool _keepPaper;
+
+    partial void OnSelectedAreaChanged(AreaItem? value)
+    {
+        AreaTemplates.Clear();
+        foreach (var template in _templates.Where(t => t.AreaCode == value?.Code))
+        {
+            AreaTemplates.Add(new TemplateItem(template));
+        }
+
+        SelectedTemplate = AreaTemplates.FirstOrDefault();
+    }
+
+    partial void OnSelectedPaperChanged(PaperItem? value)
+    {
+        if (_keepPaper && value?.Id == Paper?.DocumentId)
+        {
+            return;
+        }
+
+        Paper = value is null ? null : new WorkingPaperViewModel(_units, _loop, _options, _user, EngagementId, value.Id);
+        _ = Paper?.ReloadAsync(CancellationToken.None);
+    }
+
+    private bool CanCreatePaper() => CanCreate && SelectedTemplate is not null;
+
+    /// <summary>Starts a working paper from the selected procedure, pinned to the template version on this laptop.</summary>
+    [RelayCommand(CanExecute = nameof(CanCreatePaper))]
+    private async Task CreatePaperAsync(CancellationToken cancellationToken)
+    {
+        Error = null;
+        if (SelectedTemplate?.Template is not { } template)
+        {
+            return;
+        }
+
+        if (Papers.Any(p => p.Code == template.Code))
+        {
+            Error = $"Engagement này đã có giấy làm việc cho {template.Code}.";
+            return;
+        }
+
+        var id = Guid.NewGuid();
+        try
+        {
+            await using (var unit = await _units.OpenAsync(cancellationToken))
+            {
+                await unit.Workspace(EngagementId, _user.Id).CreatePaperAsync(id, template.Code, template.Version, cancellationToken);
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            Error = ex.Message;
+            return;
+        }
+
+        _loop.Poke();
+        await ReloadAsync(cancellationToken);
+        SelectedPaper = Papers.FirstOrDefault(p => p.Id == id);
+    }
+}

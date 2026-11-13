@@ -193,6 +193,7 @@ public sealed class FieldSyncEngine(MasterDbContext db, IAuditLog auditLog, Time
         public Dictionary<Guid, Loaded?> Docs { get; } = [];
         public List<AuditEvent> Audit { get; } = [];
         public List<Guid>? Reviewers { get; set; }
+        public Dictionary<Guid, HashSet<EngagementRole>> Roles { get; } = [];
         public bool HasNotifications { get; set; }
     }
 
@@ -325,6 +326,11 @@ public sealed class FieldSyncEngine(MasterDbContext db, IAuditLog auditLog, Time
         {
             decided = ApplyResult.Reject("Working paper belongs to another engagement.");
         }
+        else if (!fromMaster && FieldPolicy.WhyRefused(op, await RolesAsync(unit, change.AuthorUserId, cancellationToken), loaded.Doc, change.AuthorUserId) is { } notAllowed)
+        {
+            // Membership opened the door; the role decides what may be done inside (ADR-0004, "Authorisation").
+            decided = ApplyResult.Reject(notAllowed);
+        }
         else
         {
             decided = loaded.Doc.Apply(change.ChangeId, change.AuthorUserId, op);
@@ -376,6 +382,20 @@ public sealed class FieldSyncEngine(MasterDbContext db, IAuditLog auditLog, Time
         }
 
         return new ChangeResult(change.ChangeId, outcome, decided.Reason);
+    }
+
+    private async Task<HashSet<EngagementRole>> RolesAsync(Unit unit, Guid userId, CancellationToken cancellationToken)
+    {
+        if (!unit.Roles.TryGetValue(userId, out var roles))
+        {
+            roles = [.. await db.EngagementMembers.AsNoTracking()
+                .Where(m => m.EngagementId == unit.EngagementId && m.UserId == userId)
+                .Select(m => m.Role)
+                .ToListAsync(cancellationToken)];
+            unit.Roles[userId] = roles;
+        }
+
+        return roles;
     }
 
     /// <summary>

@@ -114,10 +114,38 @@ Decisions taken while implementing (all within the rules above):
 4. Reviewers to notify when a seal breaks: the signers of the voided sign-offs and every member holding ManagerQa or
    JapanDesk in the engagement, except the person who made the change.
 
-## Open after the implementation
-1. Who may resolve a conflict, raise or clear a note, or edit a paper is not restricted beyond engagement membership
-   (and "only the reviewer who raised a note clears it"). To be fixed with the working-paper UI.
-2. Conflict list, resolution screen and the sync loop (connect, subscribe, push/pull on signal) in the WPF client;
-   SQLite migrations with the first client release.
-3. Rebuild procedure for a replica that diverged or is ahead of a restored master.
-4. No API locks an engagement yet; the engine honours the status as soon as one does.
+## Authorisation (sponsor decision 2026-11-13, with the first client slice)
+Preparation and review are kept apart. `FieldPolicy` in `src/AuditPlatform.Sync` states the rule once; the master
+applies it when it admits a change (after membership and lock, before the reducer), and the client applies the same
+function to decide what a form offers.
+
+| Operation | Preparer | Manager QA | Japan Desk | Engagement manager |
+|---|---|---|---|---|
+| Create a paper, edit a field, link or unlink evidence, submit for review, respond to a note | Yes | No | No | Yes |
+| Create a paper in another member's name (assign) | No | No | No | Yes |
+| Decide a flagged conflict | Only on a paper they prepared | No | No | Yes |
+| Raise a review note; clear a note they raised | No | Yes | Yes | Yes |
+| Sign off at their level (online, TOTP step-up) | No | Level 1 | Level 2 | No |
+
+- A refused change is answered `Rejected` with the reason and stays in its author's outbox until they dismiss it; it
+  is in the audit log (`sync.<op>.rejected`) and never in the change log, so replicas do not judge roles.
+- A person holding several roles has the union of their rights. The reducer still refuses a sign-off by the paper's
+  preparer; a member who holds both Preparer and a review role can edit a paper someone else prepared and then sign
+  it. Role assignment (console, audit-logged) is the control for that, as is usual in a team of three to five.
+
+## Client (first slice, 2026-11-13)
+| Part | Where | What it does |
+|---|---|---|
+| Directory | `GET /api/engagements`, `GET /api/templates`; `DirectoryStore` | The caller's engagements with members and roles, and the methodology library, cached in SQLite so forms open offline. |
+| Sync loop | `SyncLoop` | Connect, read the directory, subscribe, push, pull. Runs on the master's signal, on a local save, after a reconnect (subscribing again) and every 60 seconds. A replica that cannot follow the master stops for that engagement and says why. |
+| Form | `WorkingPaperViewModel`, `PaperView` | The confirmed replica with the user's unsent work on top. A box remembers the version that was on screen when the user started typing; the save carries that version, so an edit that arrived meanwhile produces a conflict instead of being overwritten. |
+| Conflicts | Same form | Both values side by side; the decision is offered only to whoever the table above entitles. |
+| Local schema | EF Core migrations in `Client.Core/LocalStore/Migrations` | Applied at start-up; `EnsureCreated` is gone. |
+| One author per laptop | `SessionGate`, sign-out | The master records a change under the identity that delivers it, so sign-out is refused while the outbox is not empty, and another user cannot start on a laptop that holds someone else's unsent changes. |
+
+## Open after the first client slice
+1. Evidence: intake on the client, upload and download, link on the form (evidence checklist per procedure).
+2. Review notes and sign-off screens (the engine and the API exist); in-app notice of a broken seal beyond the status line.
+3. API and screen to lock an engagement; the engine and the client honour the status as soon as one does.
+4. Rebuild procedure for a replica that diverged or is ahead of a restored master (the loop stops and reports it).
+5. Engagement administration from the client for administrators (console commands exist).

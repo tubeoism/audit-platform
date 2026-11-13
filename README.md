@@ -2,7 +2,7 @@
 
 Working-paper platform for internal audit and fraud investigation engagements under AUP contracts. Auditors work offline on Windows laptops; a master node on an Oracle Cloud Arm VM is the system of record, coordinates real-time sync, enforces engagement lock and sign-off, and holds the archive.
 
-Status: **master with authentication and durable sync; client UI to follow**. Domain rules, contracts, audit log, evidence store, database schema, authentication (ADR-0005) and the sync engine (ADR-0004: field-level versioning with master arbitration, PostgreSQL log on the master, SQLite replica on the client, SignalR transport, TOTP step-up at sign-off) are in place and tested. The WPF client has no working-paper screens yet.
+Status: **master with authentication and durable sync; first client slice** (sign-in, engagements, templated working papers, sync loop, conflict decision). Evidence, review notes and sign-off screens, and the engagement lock screen follow. Domain rules, contracts, audit log, evidence store, database schema, authentication (ADR-0005) and the sync engine (ADR-0004: field-level versioning with master arbitration, PostgreSQL log on the master, SQLite replica on the client, SignalR transport, TOTP step-up at sign-off) are in place and tested.
 
 ## Solution layout
 
@@ -15,8 +15,8 @@ Status: **master with authentication and durable sync; client UI to follow**. Do
 | `src/AuditPlatform.Evidence` | net10.0 | Content-addressed evidence store (BLAKE3-256), verify-on-read |
 | `src/AuditPlatform.Master.Data` | net10.0 | PostgreSQL schema (EF Core + Npgsql), migrations, append-only triggers on `audit_log` and `changes`, `PostgresAuditLog` |
 | `src/AuditPlatform.Master` | net10.0, linux-arm64 | ASP.NET Core master: authentication (accounts, TOTP, sessions, sign-off step-up, admin API and console command), sync hub, `SyncCoordinator` policy layer, `FieldSyncEngine` (durable engine), sign-off API, reviewer notifications, health checks |
-| `src/AuditPlatform.Client.Core` | net10.0 | Client logic: SQLite replica (`LocalReplica`), outbox, `SyncAgent`, `EngagementWorkspace` (edits as field-v1 changes), SignalR transport, `AuthSession` (sign-in, token renewal, sign-off), view models |
-| `src/AuditPlatform.Client.Wpf` | net10.0-windows | WPF shell (thin) |
+| `src/AuditPlatform.Client.Core` | net10.0 | Client logic: SQLite replica (`LocalReplica`) with migrations, outbox, `SyncAgent`, `SyncLoop`, `EngagementWorkspace` (edits as field-v1 changes), directory cache (engagements, members, templates), working-paper layout, SignalR transport, `AuthSession`, view models |
+| `src/AuditPlatform.Client.Wpf` | net10.0-windows | WPF shell (thin): sign-in window, main window with engagements, working papers and the form |
 | `tests/*` | net10.0 | xUnit v3 on Microsoft.Testing.Platform |
 
 Dependency direction: `Domain` ← `Master.Data` ← `Master`; `Contracts`/`Domain` ← `Sync` ← `Master`; `Contracts`/`Domain`/`Sync` ← `Client.Core` ← `Client.Wpf`. The client never references master projects.
@@ -72,6 +72,30 @@ dotnet run --project src/AuditPlatform.Master -- admin invite you@example.com "Y
 dotnet run --project src/AuditPlatform.Master
 ```
 
+## Engagements and the methodology library
+
+Set up from the VM console; every command is written to the audit log. An administrator gets no access to an engagement by setting it up.
+
+```bash
+sudo audit-admin engagement create ENG-2026-014 "Công ty ABC" "AUP-2026-014" 2026-01-01 2026-12-31
+sudo audit-admin engagement member ENG-2026-014 an@audit.io.vn preparer        # preparer | managerqa | japandesk | engagementmanager
+sudo audit-admin engagement list
+# One call per methodology file of ia-aup-procedures; a procedure whose text changed becomes the next version.
+for f in IA_AUP_Standard_Vi/[0-9]*.md; do sudo audit-admin templates import vi < "$f"; done
+for f in IA_AUP_Standard_En/[0-9]*.md; do sudo audit-admin templates import en < "$f"; done
+```
+
+Who may do what inside an engagement is the table "Authorisation" in [ADR-0004](docs/adr/0004-sync-model.md).
+
+## Client
+
+`dotnet run --project src/AuditPlatform.Client.Wpf` (Windows). Settings in `appsettings.json`: `Client:MasterUrl`, `Client:TemplateLanguage` (`vi` or `en`). Data is under `%LOCALAPPDATA%\AuditPlatform` (SQLite database, DPAPI-protected session); the volume must be BitLocker-encrypted.
+
+- Sign in once with password and authenticator code; afterwards the client opens offline from the stored session.
+- A box on the form is saved when the cursor leaves it; the status line shows what is waiting to be sent.
+- Two people changing the same box: both values are kept and shown side by side until the paper's preparer or the engagement manager decides.
+- To change the local schema: `dotnet ef migrations add <Name> --project src/AuditPlatform.Client.Core -o LocalStore/Migrations`.
+
 ## Security rules already enforced
 
 - Nobody reaches the sync hub or the API without a live session; a disabled user or a revoked laptop is refused on the next request.
@@ -80,7 +104,9 @@ dotnet run --project src/AuditPlatform.Master
 - Account events (invite, enrolment, sign-in, failure, lockout, reset, revocation, sign-off grant) are written to the hash-chained audit log.
 
 - The master ignores the author id a client claims and uses the authenticated identity.
-- Non-members get the same error whether or not an engagement exists.
+- Non-members get the same error whether or not an engagement exists; the engagement list shows a user only their own.
+- Inside an engagement the role decides: reviewers do not write content, preparers do not raise review notes, a conflict is decided by the paper's preparer or the engagement manager. The master enforces it; the client only mirrors it.
+- Unsent changes of one person cannot be delivered by another person signing in on the same laptop.
 - Locked or archived engagements reject every change, on the master and in the client outbox.
 - `audit_log` rejects UPDATE, DELETE and TRUNCATE at database level; tampering that bypasses this is caught by chain verification.
 - Evidence is re-hashed on every read; a modified file raises `EvidenceIntegrityException`.
