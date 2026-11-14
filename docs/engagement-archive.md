@@ -18,8 +18,16 @@ The master builds the package and changes the status (`audit-admin engagement pa
 | 4 | `audit-admin engagement archived <code> <package-digest> <tar-sha256> "<where it is stored>"`: `Locked -> Archived` | Yes, once, and it cannot be taken back |
 
 `sudo audit-engagement-archive <code>` runs 1 to 4; `--package-only` stops after step 1 and leaves the tar in
-`/srv/audit/archive-staging` for inspection (do this the first time). The upload asks you to type the engagement code
-(`--yes` skips the question). If the read-back differs, nothing is marked archived and the bad object stays in the bucket.
+`/srv/audit/archive-staging` for inspection (do this the first time) and prints the command that uploads exactly that package:
+`--resume <tar> <tar-sha256> <package-digest>` (steps 2 to 4, no second packaging). The upload asks you to type the
+engagement code (`--yes` skips the question). The code may contain any characters the master accepts; file names and remote
+paths use a plain version of it.
+
+When something goes wrong after the upload the script keeps the tar and says so, because running everything again would put
+a second permanent copy in the bucket:
+- the read-back differs, or cannot be done: nothing is marked archived and the object stays in the bucket;
+- the read-back is fine but `engagement archived` fails: the script prints the exact `audit-admin engagement archived ...`
+  command to run once the cause is fixed.
 
 Order matters: `Archived` has to mean "a verified copy exists in the immutable archive". Step 4 accepts only a package
 the master itself built and recorded in step 1 (`engagement.archive.packaged`, with both digests); invented or mistyped

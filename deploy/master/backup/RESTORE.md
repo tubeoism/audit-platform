@@ -133,12 +133,13 @@ Giới hạn cần biết: bản sao này chạy mỗi 10 phút, nên file vừa
 
 Engagement đã khoá được đóng gói và lưu bất biến 10 năm bằng `sudo audit-engagement-archive <mã>` (xem `docs/engagement-archive.md`). Gói là một file tar mã hoá bằng **khoá bằng chứng** (cùng khoá với bản sao bằng chứng; mất khoá thì không đọc được gói).
 
-Đọc lại một gói (trên VM đã cài `evidence-setup.sh`, hoặc máy khác có rclone và khoá qua `audit-evidence-key --install`):
+Đọc lại một gói (trên VM đã cài `evidence-setup.sh`, hoặc máy khác có rclone và khoá qua `audit-evidence-key --install`). Làm trong một thư mục tạm mới và chạy mọi bước bằng cùng một người dùng, để không lẫn với gói khác:
 
 ```bash
-sudo -u audit rclone lsf archive:<mã> --config /etc/audit-evidence/rclone.conf
-sudo -u audit rclone copyto archive:<mã>/<tên>.tar /srv/audit/archive-staging/<tên>.tar --config /etc/audit-evidence/rclone.conf
-cd /srv/audit/archive-staging && tar -xf <tên>.tar && sha256sum -c engagement-*/SHA256SUMS
+D=$(sudo -u audit mktemp -d /srv/audit/archive-staging/read.XXXXXX)
+sudo -u audit rclone lsf archive:<mã> --config /etc/audit-evidence/rclone.conf          # <mã> = tên engagement đã đổi ký tự lạ thành _
+sudo -u audit rclone copyto archive:<mã>/<tên>.tar "$D/p.tar" --config /etc/audit-evidence/rclone.conf
+sudo -u audit sh -c "cd '$D' && tar -xf p.tar && sha256sum -c engagement-*/SHA256SUMS"
 ```
 
 `sha256sum -c` phải báo OK cho mọi file. Mã băm của cả file tar nằm trong audit log (`engagement.archived`, `tarSha256`). Đối tượng trong `audit-archive` không xoá được và không ghi đè được: gói lỗi hoặc dư vẫn nằm đó; chỉ cần không đánh dấu `Archived` cho nó.
