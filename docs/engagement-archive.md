@@ -34,7 +34,7 @@ All problems are reported together; nothing is written if there is any.
 - Every audit-log entry about the engagement hashes to its own stored hash.
 - Every evidence file with a receipt has an object record and is present in the store.
 
-Evidence is read through the store's verified open (re-hashed on every read). After the file is written it is read back
+Evidence is read through the store's verified open (re-hashed on every read), hashed again with SHA-256 for the list, and then copied. After the file is written it is read back
 once more: every file in the tar is hashed and compared with `SHA256SUMS`, which must list exactly the files present; the
 same pass produces the SHA-256 of the whole tar. A package that exists on disk is a package that verifies.
 
@@ -52,7 +52,7 @@ the same bytes except `manifest.json`, which records when it was generated.
 | `changes.jsonl` | The change log in order of receipt; `payloadBase64` is the operation as sent |
 | `audit-log.jsonl` | Every audit-log entry about the engagement, with `previousHash` and `hash` |
 | `evidence/index.json` | Every evidence file and every receipt (who, when, original file name) |
-| `evidence/files/<sha256>` | The evidence files, named by the SHA-256 of their content |
+| `evidence/files/<blake3>` | The evidence files, named by the BLAKE3-256 of their content: the address every record in the system uses (`b3sum` can check it). `SHA256SUMS` lists their SHA-256 |
 | `SHA256SUMS` | SHA-256 of every other file; its own SHA-256 is the **package digest** |
 
 Anyone can check a package with `tar -xf package.tar && sha256sum -c engagement-*/SHA256SUMS`, with no software of ours.

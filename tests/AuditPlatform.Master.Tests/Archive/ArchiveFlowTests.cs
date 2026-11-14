@@ -86,7 +86,9 @@ public sealed class ArchiveFlowTests(AuthFactory factory) : IClassFixture<AuthFa
             return 0;
         });
 
-        var hash = Convert.ToHexStringLower(SHA256.HashData(content));
+        // The store's address is BLAKE3-256, not SHA-256: ask the store.
+        var hash = await factory.ScopeAsync(sp => sp.GetRequiredService<MasterDbContext>().EvidenceIntake.AsNoTracking()
+            .Where(i => i.EngagementId == id).Select(i => i.Hash).SingleAsync(Ct));
         return new Seed(id, code, manager.Id, paperId, hash, content);
     }
 
@@ -155,6 +157,9 @@ public sealed class ArchiveFlowTests(AuthFactory factory) : IClassFixture<AuthFa
         Assert.Equal("EngagementManager", members.RootElement.GetProperty("members")[0].GetProperty("role").GetString());
         Assert.Contains("\"engagement.locked\"", Encoding.UTF8.GetString(files[$"{root}/audit-log.jsonl"]), StringComparison.Ordinal);
         Assert.Contains("xác nhận ngân hàng.pdf", Encoding.UTF8.GetString(files[$"{root}/evidence/index.json"]), StringComparison.Ordinal);
+        Assert.Contains(seed.EvidenceHash, Encoding.UTF8.GetString(files[$"{root}/evidence/index.json"]), StringComparison.Ordinal);
+        // The checksum list holds the real SHA-256 of the evidence, which is not its (BLAKE3) name.
+        Assert.Contains($"{Convert.ToHexStringLower(SHA256.HashData(seed.Evidence))}  {root}/evidence/files/{seed.EvidenceHash}", sums, StringComparison.Ordinal);
 
         // Packaging is read-only for the engagement, and it is on the audit log with the digests.
         var trail = await TrailAsync(seed.Id);

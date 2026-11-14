@@ -13,8 +13,9 @@ public sealed class ArchiveTarTests
 
     private static string Sha(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
 
-    private static ArchiveEntry Evidence(byte[] content, string? claimedHash = null) =>
-        ArchiveEntry.FromStream($"evidence/files/{claimedHash ?? Sha(content)}", claimedHash ?? Sha(content),
+    // The store addresses files by BLAKE3; the archive checks them by SHA-256. Any name will do for the test.
+    private static ArchiveEntry Evidence(byte[] content, string? name = null) =>
+        ArchiveEntry.FromStream($"evidence/files/{name ?? Sha(content)}",
             _ => ValueTask.FromResult<Stream>(new MemoryStream(content, writable: false)));
 
     private static List<ArchiveEntry> Sample(byte[]? file = null) =>
@@ -110,17 +111,96 @@ public sealed class ArchiveTarTests
         Assert.NotEqual(originalCheck.TarSha256, changedCheck.TarSha256);
     }
 
-    [Fact]
-    public async Task A_file_that_does_not_hash_to_its_name_is_caught_when_the_written_archive_is_checked()
+    /// <summary>Reads as <c>first</c> until it is rewound, then as <c>second</c>: a file that changed between hashing and copying.</summary>
+    private sealed class ChangingStream(byte[] first, byte[] second) : Stream
     {
-        var damaged = Evidence(Encoding.UTF8.GetBytes("not what the record says"), claimedHash: new string('a', 64));
+        private byte[] _data = first;
+        private long _position;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => true;
+        public override bool CanWrite => false;
+        public override long Length => _data.Length;
+
+        public override long Position
+        {
+            get => _position;
+            set
+            {
+                _position = value;
+                _data = second;
+            }
+        }
+
+        public override void Flush() { }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var n = (int)Math.Min(count, _data.Length - _position);
+            Array.Copy(_data, _position, buffer, offset, n);
+            _position += n;
+            return n;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            Position = origin == SeekOrigin.Begin ? offset : throw new NotSupportedException();
+            return _position;
+        }
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private sealed class ForwardOnlyStream(byte[] data) : Stream
+    {
+        private readonly MemoryStream _inner = new(data);
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => _inner.Length;
+        public override long Position { get => _inner.Position; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public async Task Evidence_is_listed_by_its_real_sha256_whatever_it_is_called()
+    {
+        var content = Encoding.UTF8.GetBytes("a file addressed by BLAKE3 elsewhere");
+        var blake3Name = new string('b', 64);
+
+        var (tar, result, _) = await BuildAsync([ArchiveEntry.FromBytes("manifest.json", [1]), Evidence(content, blake3Name)]);
+
+        Assert.Contains($"{Sha(content)}  {Root}/evidence/files/{blake3Name}\n", result.Sha256Sums, StringComparison.Ordinal);
+        Assert.Equal(content, (await ReadAsync(tar))[$"{Root}/evidence/files/{blake3Name}"]);
+    }
+
+    [Fact]
+    public async Task A_file_that_changes_between_hashing_and_copying_is_caught_when_the_written_archive_is_checked()
+    {
+        var changing = ArchiveEntry.FromStream("evidence/files/x",
+            _ => ValueTask.FromResult<Stream>(new ChangingStream(Encoding.UTF8.GetBytes("version one"), Encoding.UTF8.GetBytes("version TWO"))));
 
         using var buffer = new MemoryStream();
-        await ArchiveTar.WriteAsync(buffer, Root, [ArchiveEntry.FromBytes("manifest.json", [1]), damaged], Modified, Ct);
+        await ArchiveTar.WriteAsync(buffer, Root, [ArchiveEntry.FromBytes("manifest.json", [1]), changing], Modified, Ct);
         buffer.Position = 0;
         var thrown = await Assert.ThrowsAsync<ArchiveIntegrityException>(() => ArchiveTar.VerifyAsync(buffer, Ct));
 
-        Assert.Contains("evidence/files/", thrown.Message, StringComparison.Ordinal);
+        Assert.Contains("evidence/files/x", thrown.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_stream_that_cannot_seek_is_refused()
+    {
+        var forward = ArchiveEntry.FromStream("evidence/files/x", _ => ValueTask.FromResult<Stream>(new ForwardOnlyStream([1, 2, 3])));
+
+        using var buffer = new MemoryStream();
+        await Assert.ThrowsAsync<ArgumentException>(() => ArchiveTar.WriteAsync(buffer, Root, [forward], Modified, Ct));
     }
 
     [Fact]
