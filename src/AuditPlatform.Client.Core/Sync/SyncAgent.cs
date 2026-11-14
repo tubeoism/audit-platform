@@ -1,5 +1,6 @@
 using AuditPlatform.Client.Core.LocalStore;
 using AuditPlatform.Contracts.Sync;
+using AuditPlatform.Domain.Engagements;
 using Microsoft.EntityFrameworkCore;
 
 namespace AuditPlatform.Client.Core.Sync;
@@ -175,6 +176,7 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
         if (engagement is { IsReadOnly: false })
         {
             engagement.IsReadOnly = true;
+            engagement.Status = EngagementStatus.Locked;
             await db.SaveChangesAsync(cancellationToken);
         }
     }

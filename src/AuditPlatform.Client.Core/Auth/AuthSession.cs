@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using AuditPlatform.Contracts.Auth;
+using AuditPlatform.Contracts.Engagements;
 using AuditPlatform.Contracts.Sync;
 
 namespace AuditPlatform.Client.Core.Auth;
@@ -143,6 +144,41 @@ public sealed class AuthSession(HttpClient http, ClientOptions options, IRefresh
 
         return await PostAsync<SignOffResponse>(SyncRoutes.SignOff,
             new SignOffRequest(engagementId, workingPaperId, level, stepUp.StepUpToken), accessToken, cancellationToken);
+    }
+
+    /// <summary>Moves an engagement to its next phase (an engagement manager only). Locking is <see cref="LockEngagementAsync"/>.</summary>
+    public async Task<AuthResult<AdvanceResponse>> AdvanceEngagementAsync(Guid engagementId, string target, CancellationToken cancellationToken)
+    {
+        if (await GetAccessTokenAsync(cancellationToken) is not { } accessToken)
+        {
+            return new AuthResult<AdvanceResponse>(null, Unreachable);
+        }
+
+        return await PostAsync<AdvanceResponse>(LifecycleRoutes.Status(engagementId), new AdvanceRequest(target), accessToken, cancellationToken);
+    }
+
+    /// <summary>What stands between the engagement and its lock, as the master sees it now. Null when offline or refused.</summary>
+    public Task<LockReadiness?> GetLockReadinessAsync(Guid engagementId, CancellationToken cancellationToken) =>
+        GetAsync<LockReadiness>(LifecycleRoutes.LockReadiness(engagementId), cancellationToken);
+
+    /// <summary>
+    /// Locks the engagement for good: a fresh authenticator code buys a grant for the exact state the manager looked at
+    /// (<paramref name="digest"/> from <see cref="GetLockReadinessAsync"/>); the master refuses if that state has moved on.
+    /// </summary>
+    public async Task<AuthResult<LockResponse>> LockEngagementAsync(Guid engagementId, string digest, string code, CancellationToken cancellationToken)
+    {
+        var grant = await RequestSignOffGrantAsync(engagementId, digest, code, cancellationToken);
+        if (grant.Value is not { } stepUp)
+        {
+            return new AuthResult<LockResponse>(null, grant.Error ?? Unreachable);
+        }
+
+        if (await GetAccessTokenAsync(cancellationToken) is not { } accessToken)
+        {
+            return new AuthResult<LockResponse>(null, Unreachable);
+        }
+
+        return await PostAsync<LockResponse>(LifecycleRoutes.Lock(engagementId), new LockRequest(stepUp.StepUpToken), accessToken, cancellationToken);
     }
 
     /// <summary>
