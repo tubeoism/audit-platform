@@ -364,6 +364,161 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
     }
 
     [Fact]
+    public async Task Review_notes_are_raised_answered_and_cleared_and_the_paper_is_signed_off_with_a_fresh_code_on_the_forms()
+    {
+        factory.RequireDatabase();
+        factory.Clock.CatchUpWithRealTime();
+        var an = await factory.EnrolAsync();
+        var qa = await factory.EnrolAsync();
+        var japan = await factory.EnrolAsync();
+        var code = "ENG-" + Guid.NewGuid().ToString("N")[..8];
+        await AdminAsync(null, "engagement", "create", code, "Công ty ABC", "AUP-2026-016", "2026-01-01", "2026-12-31");
+        await AdminAsync(null, "engagement", "member", code, an.Email, "preparer");
+        await AdminAsync(null, "engagement", "member", code, qa.Email, "managerqa");
+        await AdminAsync(null, "engagement", "member", code, japan.Email, "japandesk");
+        // Its own procedure, so that the tests of this class can run in either order on the shared library.
+        await AdminAsync(CashArea[..CashArea.IndexOf("### 1.", StringComparison.Ordinal)] + """
+            ### 9. AUP-CSH-91: Petty Cash
+
+            - **Procedure:** Review petty cash vouchers.
+            - **Audit Content:**
+                - Inspect each voucher for approval.
+            - **Evidence to Check:**
+                - Voucher file.
+            """, "templates", "import", "en");
+
+        await using var deskAn = new Desk(factory, an);
+        await using var deskQa = new Desk(factory, qa);
+        await using var deskJapan = new Desk(factory, japan);
+        Assert.Null(await deskAn.StartAsync());
+        Assert.Null(await deskQa.StartAsync());
+        Assert.Null(await deskJapan.StartAsync());
+
+        // ----- An prepares the paper and submits it for review.
+        deskAn.Engagement.SelectedTemplate = deskAn.Engagement.AreaTemplates.Single(t => t.Template.Code == "AUP-CSH-91");
+        await deskAn.Engagement.CreatePaperCommand.ExecuteAsync(null);
+        var step = WorkingPaperLayout.StepKey(1);
+        await deskAn.TypeAndLeaveAsync(step, "Đã kiểm tra 40 phiếu chi, đủ chữ ký phê duyệt.");
+        await deskAn.TypeAndLeaveAsync(WorkingPaperLayout.Exceptions, "0");
+        await deskAn.Paper.SubmitCommand.ExecuteAsync(null);
+        await deskAn.SyncAsync();
+        // The preparer reviews nothing: no note form, no sign-off.
+        Assert.False(deskAn.Paper.CanRaiseNote);
+        Assert.False(deskAn.Paper.CanSignOff);
+
+        // ----- The Manager QA reviewer sees the paper, may raise notes and may sign, and nothing stands in the way yet.
+        await deskQa.SyncAsync();
+        deskQa.Engagement.SelectedPaper = Assert.Single(deskQa.Engagement.Papers);
+        await deskQa.Paper.ReloadAsync(Ct);
+        Assert.Equal("Chờ soát xét", deskQa.Paper.StatusText);
+        Assert.True(deskQa.Paper.CanRaiseNote);
+        Assert.True(deskQa.Paper.CanSignOff);
+        Assert.Equal("Ký soát xét cấp 1 (Manager QA)", deskQa.Paper.SignOffTitle);
+        Assert.Null(deskQa.Paper.SignOffBlocker);
+        Assert.True(deskQa.Paper.SignOffCommand.CanExecute(null));
+        // The Japan Desk reviewer cannot sign yet: the paper is not at their level.
+        await deskJapan.SyncAsync();
+        deskJapan.Engagement.SelectedPaper = Assert.Single(deskJapan.Engagement.Papers);
+        await deskJapan.Paper.ReloadAsync(Ct);
+        Assert.False(deskJapan.Paper.CanSignOff);
+
+        // ----- The reviewer raises a note offline: it shows as unsent, and signing waits for the master to have it.
+        deskQa.Paper.NewNoteField = deskQa.Field(WorkingPaperLayout.Exceptions);
+        deskQa.Paper.NewNoteText = "  Giải thích vì sao không có ngoại lệ khi 3 phiếu thiếu chữ ký?  ";
+        await deskQa.Paper.RaiseNoteCommand.ExecuteAsync(null);
+        Assert.Null(deskQa.Paper.Error);
+        Assert.Equal("", deskQa.Paper.NewNoteText);
+        var raised = Assert.Single(deskQa.Paper.Notes);
+        Assert.Equal(("Exceptions noted", "Giải thích vì sao không có ngoại lệ khi 3 phiếu thiếu chữ ký?", "Chưa gửi lên máy chủ"),
+            (raised.FieldLabel, raised.Text, raised.StateText));
+        Assert.Contains("chưa gửi", deskQa.Paper.SignOffBlocker, StringComparison.Ordinal);
+        Assert.False(deskQa.Paper.SignOffCommand.CanExecute(null));
+        await deskQa.SyncAsync();
+        raised = Assert.Single(deskQa.Paper.Notes);
+        Assert.Equal("Chờ người lập trả lời", raised.StateText);
+        Assert.Contains("1 ý kiến chưa xử lý", deskQa.Paper.SignOffBlocker, StringComparison.Ordinal);
+        Assert.False(raised.CanClear);
+        // A reply the reviewer forces on their own note is refused on the form, as it would be by the master.
+        Assert.False(raised.CanRespond);
+
+        // ----- An sees the note, answers it; the reviewer reads the answer and closes the note.
+        await deskAn.SyncAsync();
+        var seen = Assert.Single(deskAn.Paper.Notes);
+        Assert.True(seen.CanRespond);
+        Assert.False(seen.CanClear);
+        await deskAn.Paper.RespondCommand.ExecuteAsync(seen);
+        Assert.Contains("Nhập nội dung", deskAn.Paper.Error, StringComparison.Ordinal);
+        seen.ResponseText = "Ba phiếu thiếu chữ ký đã được bổ sung ngày 05/01, xem file đính kèm.";
+        await deskAn.Paper.RespondCommand.ExecuteAsync(seen);
+        Assert.Null(deskAn.Paper.Error);
+        Assert.Equal("", seen.ResponseText);
+        Assert.Contains("chưa gửi lên máy chủ", Assert.Single(deskAn.Paper.Notes).Responses.Single(), StringComparison.Ordinal);
+        await deskAn.SyncAsync();
+
+        await deskQa.SyncAsync();
+        raised = Assert.Single(deskQa.Paper.Notes);
+        Assert.Equal("Đã có trả lời; chờ người nêu ý kiến xác nhận", raised.StateText);
+        Assert.StartsWith("Test User: Ba phiếu", Assert.Single(raised.Responses), StringComparison.Ordinal);
+        Assert.True(raised.CanClear);
+        Assert.NotNull(deskQa.Paper.SignOffBlocker);
+        await deskQa.Paper.ClearNoteCommand.ExecuteAsync(raised);
+        await deskQa.SyncAsync();
+        Assert.Equal("Đã xử lý xong", Assert.Single(deskQa.Paper.Notes).StateText);
+        Assert.Equal("Tất cả 1 ý kiến đã xử lý xong.", deskQa.Paper.NotesSummary);
+        Assert.Null(deskQa.Paper.SignOffBlocker);
+
+        // ----- Signing needs a fresh code: a wrong one signs nothing, a missing one is asked for.
+        await deskQa.Paper.SignOffCommand.ExecuteAsync(null);
+        Assert.Contains("6 chữ số", deskQa.Paper.Error, StringComparison.Ordinal);
+        deskQa.Paper.SignOffCode = "000000";
+        await deskQa.Paper.SignOffCommand.ExecuteAsync(null);
+        Assert.NotNull(deskQa.Paper.Error);
+        await deskQa.SyncAsync();
+        Assert.Equal("Chờ soát xét", deskQa.Paper.StatusText);
+        Assert.Empty(deskQa.Paper.SignOffs);
+
+        deskQa.Paper.SignOffCode = factory.NextCode(qa.Secret);
+        await deskQa.Paper.SignOffCommand.ExecuteAsync(null);
+        Assert.Null(deskQa.Paper.Error);
+        Assert.Contains("Đã ký", deskQa.Paper.SignOffMessage, StringComparison.Ordinal);
+        await deskQa.SyncAsync();
+        Assert.Equal("Đã ký cấp 1 (Manager QA)", deskQa.Paper.StatusText);
+        Assert.Contains("còn hiệu lực", Assert.Single(deskQa.Paper.SignOffs), StringComparison.Ordinal);
+        Assert.False(deskQa.Paper.CanSignOff);
+
+        // ----- The Japan Desk reviewer signs the second level the same way.
+        await deskJapan.SyncAsync();
+        Assert.True(deskJapan.Paper.CanSignOff);
+        Assert.Equal("Ký soát xét cấp 2 (Japan Desk)", deskJapan.Paper.SignOffTitle);
+        Assert.Null(deskJapan.Paper.SignOffBlocker);
+        deskJapan.Paper.SignOffCode = factory.NextCode(japan.Secret);
+        await deskJapan.Paper.SignOffCommand.ExecuteAsync(null);
+        Assert.Null(deskJapan.Paper.Error);
+        await deskJapan.SyncAsync();
+        Assert.Equal("Đã ký cấp 2 (Japan Desk)", deskJapan.Paper.StatusText);
+        Assert.Equal(2, deskJapan.Paper.SignOffs.Count);
+
+        // ----- An changes the content afterwards: the seal breaks on every laptop and review starts again.
+        await deskAn.SyncAsync();
+        Assert.Equal("Đã ký cấp 2 (Japan Desk)", deskAn.Paper.StatusText);
+        await deskAn.TypeAndLeaveAsync(WorkingPaperLayout.Exceptions, "3");
+        await deskAn.SyncAsync();
+        await deskQa.SyncAsync();
+        Assert.Equal("Chờ soát xét", deskQa.Paper.StatusText);
+        Assert.All(deskQa.Paper.SignOffs, line => Assert.Contains("ĐÃ MẤT HIỆU LỰC", line, StringComparison.Ordinal));
+        Assert.True(deskQa.Paper.CanSignOff);
+
+        // ----- On the master: each step is on the audit log under the right person.
+        var trail = await factory.AuditAsync();
+        Assert.Single(trail, a => a.Action == "sync.note-raise.accepted" && a.ActorUserId == qa.Id);
+        Assert.Single(trail, a => a.Action == "sync.note-respond.accepted" && a.ActorUserId == an.Id);
+        Assert.Single(trail, a => a.Action == "sync.note-clear.accepted" && a.ActorUserId == qa.Id);
+        Assert.Single(trail, a => a.Action == "sync.sign-off.accepted" && a.ActorUserId == qa.Id);
+        Assert.Single(trail, a => a.Action == "sync.sign-off.accepted" && a.ActorUserId == japan.Id);
+        Assert.Contains(trail, a => a.Action == "sync.seal.broken");
+    }
+
+    [Fact]
     public async Task Directory_api_needs_a_session_and_the_console_refuses_bad_input()
     {
         factory.RequireDatabase();
