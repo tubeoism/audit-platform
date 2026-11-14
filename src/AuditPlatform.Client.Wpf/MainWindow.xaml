@@ -64,6 +64,45 @@
           <TextBlock DockPanel.Dock="Top" Text="{Binding Heading}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
           <TextBlock DockPanel.Dock="Top" Text="{Binding Detail}" Style="{StaticResource Muted}" Margin="0,2,0,0" />
 
+          <!-- Phases and the final lock: the engagement manager only, and only online. -->
+          <StackPanel DockPanel.Dock="Top" Margin="0,8,0,8" Visibility="{Binding ShowLifecycle, Converter={StaticResource Present}}">
+            <TextBlock Text="Giai đoạn engagement" Style="{StaticResource SectionTitle}" />
+            <ItemsControl ItemsSource="{Binding Phases}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Button Content="{Binding Label}" CommandParameter="{Binding}" HorizontalAlignment="Left" Margin="0,0,0,4"
+                          Command="{Binding DataContext.AdvanceCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <Border Background="#FFF6DD" BorderBrush="#E3C56A" BorderThickness="1" Padding="10,8" Margin="0,6,0,0"
+                    Visibility="{Binding ShowLock, Converter={StaticResource Present}}">
+              <StackPanel>
+                <TextBlock Text="Khoá engagement" FontWeight="SemiBold" />
+                <TextBlock Text="Khoá là bước một chiều: sau đó không ai sửa được và không mở lại được. Cần đủ hai cấp soát xét cho mọi giấy làm việc, hết ghi chú và xung đột."
+                           TextWrapping="Wrap" Style="{StaticResource Muted}" Margin="0,2,0,6" />
+                <Button Content="Kiểm tra điều kiện khoá" Command="{Binding RefreshLockCommand}" HorizontalAlignment="Left" />
+                <TextBlock Text="{Binding LockSummary}" TextWrapping="Wrap" Margin="0,6,0,0"
+                           Visibility="{Binding LockSummary, Converter={StaticResource Present}}" />
+                <ItemsControl ItemsSource="{Binding LockBlockers}" Margin="0,4,0,0">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Text="{Binding}" Foreground="#9A5B00" TextWrapping="Wrap" Margin="0,0,0,2" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <StackPanel Visibility="{Binding LockReady, Converter={StaticResource Present}}" Margin="0,8,0,0">
+                  <CheckBox Content="Tôi hiểu: khoá xong không mở lại được" IsChecked="{Binding LockUnderstood}" />
+                  <TextBlock Text="Mã xác thực 6 số hiện tại" Style="{StaticResource Muted}" Margin="0,6,0,2" />
+                  <TextBox Text="{Binding LockCode, UpdateSourceTrigger=PropertyChanged}" MaxLength="6" Width="120" HorizontalAlignment="Left" />
+                  <Button Content="Khoá engagement" Command="{Binding LockCommand}" HorizontalAlignment="Left" Margin="0,8,0,0" />
+                </StackPanel>
+              </StackPanel>
+            </Border>
+            <TextBlock Text="{Binding LifecycleMessage}" TextWrapping="Wrap" Margin="0,6,0,0"
+                       Visibility="{Binding LifecycleMessage, Converter={StaticResource Present}}" />
+          </StackPanel>
+
           <StackPanel DockPanel.Dock="Top" Visibility="{Binding CanCreate, Converter={StaticResource Present}}">
             <TextBlock Text="Thêm giấy làm việc từ thủ tục" Style="{StaticResource SectionTitle}" />
             <ComboBox ItemsSource="{Binding Areas}" SelectedItem="{Binding SelectedArea}" Margin="0,0,0,6" />

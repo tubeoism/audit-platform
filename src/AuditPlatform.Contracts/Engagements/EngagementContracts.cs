@@ -38,3 +38,38 @@ public sealed record ProcedureTemplateInfo(
     string Procedure,
     IReadOnlyList<string> AuditContent,
     IReadOnlyList<string> EvidenceToCheck);
+
+/// <summary>HTTP routes of the engagement lifecycle: moving through the phases and the final lock.</summary>
+public static class LifecycleRoutes
+{
+    public static string Status(Guid engagementId) => $"/api/engagements/{engagementId:D}/status";
+
+    public static string LockReadiness(Guid engagementId) => $"/api/engagements/{engagementId:D}/lock-readiness";
+
+    public static string Lock(Guid engagementId) => $"/api/engagements/{engagementId:D}/lock";
+
+    public const string StatusTemplate = "/api/engagements/{id:guid}/status";
+    public const string LockReadinessTemplate = "/api/engagements/{id:guid}/lock-readiness";
+    public const string LockTemplate = "/api/engagements/{id:guid}/lock";
+}
+
+/// <param name="Target">Name of an <c>EngagementStatus</c> value. Locking is not a status move; see <see cref="LockRequest"/>.</param>
+public sealed record AdvanceRequest(string Target);
+
+public sealed record AdvanceResponse(string Status);
+
+/// <summary>One reason the engagement cannot be locked yet. <paramref name="WorkingPaperId"/> is null for engagement-wide reasons.</summary>
+public sealed record LockBlocker(Guid? WorkingPaperId, string? TemplateCode, string Reason);
+
+/// <summary>
+/// What stands between the engagement and its lock, as the master sees it now. <paramref name="Digest"/> names exactly
+/// this state (every working paper's content hash and the head of the change log): the lock grant is bought for it, so
+/// what is locked is what the manager looked at.
+/// </summary>
+public sealed record LockReadiness(
+    Guid EngagementId, string Status, bool Ready, int PaperCount, string Digest, long Head, IReadOnlyList<LockBlocker> Blockers);
+
+/// <param name="StepUpToken">Single-use grant bought with a fresh authenticator code for this engagement and the digest from <see cref="LockReadiness"/>.</param>
+public sealed record LockRequest(string StepUpToken);
+
+public sealed record LockResponse(DateTimeOffset LockedAt, string Digest);

@@ -259,6 +259,128 @@ public sealed class SyncEndToEndTests(AuthFactory factory) : IClassFixture<AuthF
     }
 
     [Fact]
+    public async Task The_manager_moves_the_engagement_to_reporting_and_locks_it_only_when_every_paper_is_signed_off_and_clean()
+    {
+        factory.RequireDatabase();
+        factory.Clock.CatchUpWithRealTime();
+        var preparerUser = await factory.EnrolAsync();
+        var qaUser = await factory.EnrolAsync();
+        var japanUser = await factory.EnrolAsync();
+        var managerUser = await factory.EnrolAsync();
+        var outsiderUser = await factory.EnrolAsync();
+        var engagement = await CreateEngagementAsync((preparerUser, EngagementRole.Preparer), (qaUser, EngagementRole.ManagerQa),
+            (japanUser, EngagementRole.JapanDesk), (managerUser, EngagementRole.EngagementManager));
+
+        await using var preparer = new Seat(factory, preparerUser, engagement);
+        await using var qa = new Seat(factory, qaUser, engagement);
+        await using var japan = new Seat(factory, japanUser, engagement);
+        await using var manager = new Seat(factory, managerUser, engagement);
+        await using var outsider = new Seat(factory, outsiderUser, engagement);
+        foreach (var seat in new[] { preparer, qa, japan, manager })
+        {
+            await seat.SignInAndConnectAsync();
+        }
+
+        await outsider.SignInAndConnectAsync(subscribe: false);
+        var lockedSeen = new TaskCompletionSource<Guid>(TaskCreationOptions.RunContinuationsAsynchronously);
+        preparer.Transport.EngagementLocked += (_, id) => lockedSeen.TrySetResult(id);
+
+        async Task SignAsync(Seat reviewer, Guid paper, EngagementRole level)
+        {
+            await reviewer.SyncAsync();
+            var hash = (await reviewer.Work.ConfirmedAsync(paper, Ct)).ComputeContentHash();
+            var signed = await reviewer.Session.SignOffAsync(engagement, paper, level.ToString(), hash, factory.NextCode(reviewer.User.Secret), Ct);
+            Assert.True(signed.Succeeded, signed.Error?.Message);
+        }
+
+        // ----- Two papers: the first goes through both review levels, the second is left in draft.
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        await preparer.Work.CreatePaperAsync(first, "AUP-CSH-03", 1, Ct);
+        await preparer.Work.SetFieldAsync(first, Exceptions, "0", Ct);
+        await preparer.Work.SubmitForReviewAsync(first, Ct);
+        await preparer.Work.CreatePaperAsync(second, "AUP-CSH-04", 1, Ct);
+        await preparer.SyncAsync();
+        await SignAsync(qa, first, EngagementRole.ManagerQa);
+        await SignAsync(japan, first, EngagementRole.JapanDesk);
+
+        // ----- Only an engagement manager of the engagement moves its phases; everybody else gets the same answer.
+        Assert.Equal("not_manager", (await preparer.Session.AdvanceEngagementAsync(engagement, nameof(EngagementStatus.Review), Ct)).Error?.Error);
+        Assert.Equal("not_manager", (await outsider.Session.AdvanceEngagementAsync(engagement, nameof(EngagementStatus.Review), Ct)).Error?.Error);
+        Assert.Equal("not_manager", (await manager.Session.AdvanceEngagementAsync(Guid.NewGuid(), nameof(EngagementStatus.Review), Ct)).Error?.Error);
+        Assert.Equal("status_invalid", (await manager.Session.AdvanceEngagementAsync(engagement, "Finished", Ct)).Error?.Error);
+        Assert.Equal("transition_refused", (await manager.Session.AdvanceEngagementAsync(engagement, nameof(EngagementStatus.Reporting), Ct)).Error?.Error);
+        Assert.Equal("transition_refused", (await manager.Session.AdvanceEngagementAsync(engagement, nameof(EngagementStatus.Locked), Ct)).Error?.Error);
+        Assert.Equal(nameof(EngagementStatus.Review), (await manager.Session.AdvanceEngagementAsync(engagement, nameof(EngagementStatus.Review), Ct)).Value!.Status);
+        Assert.Equal(nameof(EngagementStatus.Reporting), (await manager.Session.AdvanceEngagementAsync(engagement, nameof(EngagementStatus.Reporting), Ct)).Value!.Status);
+
+        // ----- What stands in the way is listed; a non-member cannot even look.
+        Assert.Null(await outsider.Session.GetLockReadinessAsync(engagement, Ct));
+        var blocked = (await manager.Session.GetLockReadinessAsync(engagement, Ct))!;
+        Assert.False(blocked.Ready);
+        Assert.Equal((nameof(EngagementStatus.Reporting), 2), (blocked.Status, blocked.PaperCount));
+        var draftBlocker = Assert.Single(blocked.Blockers);
+        Assert.Equal((second, "AUP-CSH-04"), (draftBlocker.WorkingPaperId, draftBlocker.TemplateCode));
+        Assert.Equal("lock_blocked", (await manager.Session.LockEngagementAsync(engagement, blocked.Digest, factory.NextCode(managerUser.Secret), Ct)).Error?.Error);
+
+        // A signed-off paper with an open review note is not clean either.
+        var note = Guid.NewGuid();
+        await qa.Work.RaiseNoteAsync(first, note, Exceptions, "Attach the signed count sheet.", Ct);
+        await qa.SyncAsync();
+        Assert.Equal(new HashSet<Guid> { first, second },
+            (await manager.Session.GetLockReadinessAsync(engagement, Ct))!.Blockers.Select(b => b.WorkingPaperId!.Value).ToHashSet());
+
+        // The second paper goes through review; only the note is left.
+        await preparer.Work.SubmitForReviewAsync(second, Ct);
+        await preparer.SyncAsync();
+        await SignAsync(qa, second, EngagementRole.ManagerQa);
+        await SignAsync(japan, second, EngagementRole.JapanDesk);
+        var open = (await manager.Session.GetLockReadinessAsync(engagement, Ct))!;
+        Assert.Equal(first, Assert.Single(open.Blockers).WorkingPaperId);
+
+        await preparer.SyncAsync();
+        await preparer.Work.RespondAsync(first, note, "Attached.", Ct);
+        await preparer.SyncAsync();
+        await qa.SyncAsync();
+        await qa.Work.ClearNoteAsync(first, note, Ct);
+        await qa.SyncAsync();
+        var ready = (await manager.Session.GetLockReadinessAsync(engagement, Ct))!;
+        Assert.True(ready.Ready, string.Join(" ", ready.Blockers.Select(b => b.Reason)));
+        Assert.NotEqual(open.Digest, ready.Digest);
+
+        // ----- The lock needs the manager, a fresh code, and a grant for exactly this state.
+        Assert.Equal("code_invalid", (await manager.Session.LockEngagementAsync(engagement, ready.Digest, "000000", Ct)).Error?.Error);
+        Assert.Equal("step_up_required", (await manager.Session.LockEngagementAsync(engagement, open.Digest, factory.NextCode(managerUser.Secret), Ct)).Error?.Error);
+        Assert.Equal("not_manager", (await preparer.Session.LockEngagementAsync(engagement, ready.Digest, factory.NextCode(preparerUser.Secret), Ct)).Error?.Error);
+        Assert.Equal("not_manager", (await qa.Session.LockEngagementAsync(engagement, ready.Digest, factory.NextCode(qaUser.Secret), Ct)).Error?.Error);
+        Assert.Equal("not_manager", (await outsider.Session.LockEngagementAsync(engagement, ready.Digest, factory.NextCode(outsiderUser.Secret), Ct)).Error?.Error);
+
+        var locked = await manager.Session.LockEngagementAsync(engagement, ready.Digest, factory.NextCode(managerUser.Secret), Ct);
+        Assert.True(locked.Succeeded, locked.Error?.Message);
+        Assert.Equal(ready.Digest, locked.Value!.Digest);
+        Assert.Equal(engagement, await lockedSeen.Task.WaitAsync(TimeSpan.FromSeconds(20), Ct));
+
+        var row = await factory.ScopeAsync(sp => sp.GetRequiredService<MasterDbContext>().Engagements.AsNoTracking().SingleAsync(e => e.Id == engagement, Ct));
+        Assert.Equal((EngagementStatus.Locked, managerUser.Id), (row.Status, row.LockedBy));
+        Assert.NotNull(row.LockedAt);
+
+        // ----- After the lock nothing moves, and it cannot be taken back.
+        Assert.Equal("engagement_locked", (await manager.Session.AdvanceEngagementAsync(engagement, nameof(EngagementStatus.Review), Ct)).Error?.Error);
+        Assert.Equal("engagement_locked", (await manager.Session.LockEngagementAsync(engagement, ready.Digest, factory.NextCode(managerUser.Secret), Ct)).Error?.Error);
+        var late = await preparer.Work.SetFieldAsync(first, Exceptions, "9", Ct);
+        await preparer.SyncAsync();
+        var kept = Assert.Single(await preparer.Work.NeedsAttentionAsync(Ct));
+        Assert.Equal((late, OutboxState.Rejected), (kept.ChangeId, kept.State));
+
+        var trail = (await factory.AuditAsync()).Where(a => a.EngagementId == engagement).Select(a => a.Action).ToList();
+        Assert.Equal(2, trail.Count(a => a == "engagement.status.changed"));
+        Assert.Equal(2, trail.Count(a => a == "engagement.status.refused"));
+        Assert.Single(trail, a => a == "engagement.lock.refused");
+        Assert.Single(trail, a => a == "engagement.lock.step_up_refused");
+        Assert.Single(trail, a => a == "engagement.locked");
+    }
+
+    [Fact]
     public async Task Sign_off_api_refuses_callers_without_a_session_and_non_members()
     {
         factory.RequireDatabase();

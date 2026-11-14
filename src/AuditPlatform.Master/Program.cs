@@ -37,6 +37,7 @@ builder.Services.AddScoped<FieldSyncEngine>();
 builder.Services.AddScoped<IDocumentSyncEngine>(sp => sp.GetRequiredService<FieldSyncEngine>());
 builder.Services.AddScoped<SyncCoordinator>();
 builder.Services.AddScoped<EngagementService>();
+builder.Services.AddScoped<EngagementLifecycle>();
 builder.Services.AddScoped<TemplateService>();
 builder.Services.AddScoped<EvidenceService>();
 builder.Services.AddSingleton<NotificationSignal>();
@@ -75,6 +76,7 @@ app.MapAdminApi();
 app.MapAccountPages();
 app.MapSyncApi();
 app.MapDirectoryApi();
+app.MapLifecycleApi();
 app.MapEvidenceApi();
 
 // A connection ends when its access token expires; the client reconnects with a fresh one, so a revoked session

@@ -519,6 +519,125 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
     }
 
     [Fact]
+    public async Task The_engagement_manager_moves_the_phases_and_locks_the_engagement_from_the_forms_with_a_fresh_code()
+    {
+        factory.RequireDatabase();
+        factory.Clock.CatchUpWithRealTime();
+        var an = await factory.EnrolAsync();
+        var qa = await factory.EnrolAsync();
+        var japan = await factory.EnrolAsync();
+        var lead = await factory.EnrolAsync();
+        var code = "ENG-" + Guid.NewGuid().ToString("N")[..8];
+        await AdminAsync(null, "engagement", "create", code, "Công ty ABC", "AUP-2026-017", "2026-01-01", "2026-12-31");
+        await AdminAsync(null, "engagement", "member", code, an.Email, "preparer");
+        await AdminAsync(null, "engagement", "member", code, qa.Email, "managerqa");
+        await AdminAsync(null, "engagement", "member", code, japan.Email, "japandesk");
+        await AdminAsync(null, "engagement", "member", code, lead.Email, "engagementmanager");
+        await AdminAsync(CashArea[..CashArea.IndexOf("### 1.", StringComparison.Ordinal)] + """
+            ### 9. AUP-CSH-92: Bank Reconciliation
+
+            - **Procedure:** Agree the bank reconciliation to the statement.
+            - **Audit Content:**
+                - Re-perform the reconciliation.
+            - **Evidence to Check:**
+                - Bank statement.
+            """, "templates", "import", "en");
+
+        await using var deskAn = new Desk(factory, an);
+        await using var deskQa = new Desk(factory, qa);
+        await using var deskJapan = new Desk(factory, japan);
+        await using var deskLead = new Desk(factory, lead);
+        Assert.Null(await deskAn.StartAsync());
+        Assert.Null(await deskQa.StartAsync());
+        Assert.Null(await deskJapan.StartAsync());
+        Assert.Null(await deskLead.StartAsync());
+
+        // ----- Only the manager is offered the phases; a new engagement starts in Planning and can only start fieldwork.
+        Assert.False(deskAn.Engagement.ShowLifecycle);
+        Assert.False(deskQa.Engagement.ShowLifecycle);
+        Assert.True(deskLead.Engagement.ShowLifecycle);
+        Assert.Equal([EngagementStatus.Fieldwork], deskLead.Engagement.Phases.Select(p => p.Target));
+        Assert.False(deskLead.Engagement.ShowLock);
+
+        // ----- The preparer prepares a paper and the two reviewers sign it off, as in any engagement.
+        deskAn.Engagement.SelectedTemplate = deskAn.Engagement.AreaTemplates.Single(t => t.Template.Code == "AUP-CSH-92");
+        await deskAn.Engagement.CreatePaperCommand.ExecuteAsync(null);
+        await deskAn.TypeAndLeaveAsync(WorkingPaperLayout.StepKey(1), "Đã đối chiếu số dư ngân hàng, không chênh lệch.");
+        await deskAn.TypeAndLeaveAsync(WorkingPaperLayout.Exceptions, "0");
+        await deskAn.Paper.SubmitCommand.ExecuteAsync(null);
+        await deskAn.SyncAsync();
+
+        await deskLead.Engagement.AdvanceCommand.ExecuteAsync(Assert.Single(deskLead.Engagement.Phases));
+        Assert.Equal("Đã chuyển sang Fieldwork.", deskLead.Engagement.LifecycleMessage);
+        Assert.StartsWith("Fieldwork", deskLead.Engagement.Detail, StringComparison.Ordinal);
+        Assert.Equal([EngagementStatus.Review], deskLead.Engagement.Phases.Select(p => p.Target));
+        await deskLead.Engagement.AdvanceCommand.ExecuteAsync(deskLead.Engagement.Phases.Single());
+        await deskLead.Engagement.AdvanceCommand.ExecuteAsync(deskLead.Engagement.Phases.Single(p => p.Target == EngagementStatus.Reporting));
+        Assert.True(deskLead.Engagement.ShowLock);
+        Assert.Equal([EngagementStatus.Review], deskLead.Engagement.Phases.Select(p => p.Target));
+
+        // ----- With the paper still in review the lock is not offered; what is missing is said in words.
+        await deskLead.Engagement.RefreshLockCommand.ExecuteAsync(null);
+        Assert.False(deskLead.Engagement.LockReady);
+        Assert.Contains("AUP-CSH-92", Assert.Single(deskLead.Engagement.LockBlockers), StringComparison.Ordinal);
+        deskLead.Engagement.LockUnderstood = true;
+        deskLead.Engagement.LockCode = "123456";
+        Assert.False(deskLead.Engagement.LockCommand.CanExecute(null));
+
+        foreach (var (desk, user) in new[] { (deskQa, qa), (deskJapan, japan) })
+        {
+            await desk.SyncAsync();
+            desk.Engagement.SelectedPaper = Assert.Single(desk.Engagement.Papers);
+            await desk.Paper.ReloadAsync(Ct);
+            desk.Paper.SignOffCode = factory.NextCode(user.Secret);
+            await desk.Paper.SignOffCommand.ExecuteAsync(null);
+            Assert.Null(desk.Paper.Error);
+            await desk.SyncAsync();
+        }
+
+        // ----- Everything is signed: the manager can lock, but only with a fresh, valid code and a ticked acknowledgement.
+        await deskLead.Engagement.RefreshLockCommand.ExecuteAsync(null);
+        Assert.True(deskLead.Engagement.LockReady);
+        Assert.Empty(deskLead.Engagement.LockBlockers);
+        Assert.Contains("Đủ điều kiện", deskLead.Engagement.LockSummary, StringComparison.Ordinal);
+        deskLead.Engagement.LockUnderstood = false;
+        deskLead.Engagement.LockCode = factory.NextCode(lead.Secret);
+        Assert.False(deskLead.Engagement.LockCommand.CanExecute(null));
+        deskLead.Engagement.LockUnderstood = true;
+        deskLead.Engagement.LockCode = "000000";
+        await deskLead.Engagement.LockCommand.ExecuteAsync(null);
+        Assert.NotNull(deskLead.Engagement.LifecycleMessage);
+        Assert.Equal("", deskLead.Engagement.LockCode);
+        Assert.DoesNotContain("khoá", deskLead.Engagement.Detail, StringComparison.Ordinal);
+
+        deskLead.Engagement.LockCode = factory.NextCode(lead.Secret);
+        await deskLead.Engagement.LockCommand.ExecuteAsync(null);
+        Assert.Equal("Engagement đã khoá. Từ giờ chỉ xem.", deskLead.Engagement.LifecycleMessage);
+        Assert.Contains("đã khoá, chỉ xem", deskLead.Engagement.Detail, StringComparison.Ordinal);
+        Assert.False(deskLead.Engagement.ShowLifecycle);
+        Assert.False(deskLead.Engagement.ShowLock);
+        Assert.Empty(deskLead.Engagement.Phases);
+
+        // ----- The others learn of it from the master, and their forms turn read-only.
+        var until = DateTime.UtcNow.AddSeconds(20);
+        while (!deskAn.Engagement.Detail.Contains("đã khoá", StringComparison.Ordinal) && DateTime.UtcNow < until)
+        {
+            await Task.Delay(100, Ct);
+            await deskAn.SyncAsync();
+        }
+
+        Assert.Contains("đã khoá, chỉ xem", deskAn.Engagement.Detail, StringComparison.Ordinal);
+        Assert.False(deskAn.Engagement.CanCreate);
+        deskAn.Engagement.SelectedPaper = Assert.Single(deskAn.Engagement.Papers);
+        await deskAn.Paper.ReloadAsync(Ct);
+        Assert.False(deskAn.Paper.CanEdit);
+
+        var trail = (await factory.AuditAsync()).Where(a => a.ActorUserId == lead.Id).Select(a => a.Action).ToList();
+        Assert.Equal(3, trail.Count(a => a == "engagement.status.changed"));
+        Assert.Single(trail, a => a == "engagement.locked");
+    }
+
+    [Fact]
     public async Task Directory_api_needs_a_session_and_the_console_refuses_bad_input()
     {
         factory.RequireDatabase();

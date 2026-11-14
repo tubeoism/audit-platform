@@ -65,6 +65,13 @@ public sealed class Engagement
 
     public bool HasRole(Guid userId, EngagementRole role) => _members.Any(m => m.UserId == userId && m.Role == role);
 
+    /// <summary>
+    /// Whether the lifecycle allows moving straight from one status to another. Locking is a separate act with its own
+    /// preconditions and is never reachable through a plain move.
+    /// </summary>
+    public static bool CanMove(EngagementStatus from, EngagementStatus to) =>
+        to is not (EngagementStatus.Locked or EngagementStatus.Archived) && AllowedTransitions[from].Contains(to);
+
     public void MoveTo(EngagementStatus target)
     {
         if (target is EngagementStatus.Locked)

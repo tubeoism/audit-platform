@@ -28,7 +28,12 @@ public sealed record TemplateItem(ProcedureTemplate Template)
     public override string ToString() => $"{Template.Code} · {Template.Title}";
 }
 
-/// <summary>One engagement: its working papers, and starting a new one from the methodology library.</summary>
+public sealed record PhaseItem(EngagementStatus Target)
+{
+    public string Label => $"Chuyển sang {Target}";
+}
+
+/// <summary>One engagement: its working papers, starting a new one from the methodology library, and (for its manager) its phases and lock.</summary>
 public sealed partial class EngagementViewModel : ObservableObject
 {
     private readonly LocalUnitFactory _units;
@@ -56,6 +61,8 @@ public sealed partial class EngagementViewModel : ObservableObject
     public ObservableCollection<PaperItem> Papers { get; } = [];
     public ObservableCollection<AreaItem> Areas { get; } = [];
     public ObservableCollection<TemplateItem> AreaTemplates { get; } = [];
+    public ObservableCollection<PhaseItem> Phases { get; } = [];
+    public ObservableCollection<string> LockBlockers { get; } = [];
 
     [ObservableProperty]
     private string _heading = "";
@@ -83,6 +90,36 @@ public sealed partial class EngagementViewModel : ObservableObject
     [ObservableProperty]
     private string? _error;
 
+    /// <summary>The engagement's manager sees the phase buttons; nobody else does.</summary>
+    [ObservableProperty]
+    private bool _showLifecycle;
+
+    /// <summary>The lock panel is offered in Reporting only.</summary>
+    [ObservableProperty]
+    private bool _showLock;
+
+    [ObservableProperty]
+    private string _lockSummary = "";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(LockCommand))]
+    private bool _lockReady;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(LockCommand))]
+    private string _lockCode = "";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(LockCommand))]
+    private bool _lockUnderstood;
+
+    [ObservableProperty]
+    private string? _lifecycleMessage;
+
+    private string? _lockDigest;
+    private EngagementStatus _status;
+    private bool _isManager;
+
     public async Task ReloadAsync(CancellationToken cancellationToken)
     {
         await using var unit = await _units.OpenAsync(cancellationToken);
@@ -100,6 +137,29 @@ public sealed partial class EngagementViewModel : ObservableObject
         Heading = $"{engagement.Code} · {engagement.ClientName}";
         Detail = $"{engagement.Status}{(engagement.IsReadOnly ? " · đã khoá, chỉ xem" : "")} · vai trò của bạn: {(roles.Count == 0 ? "chưa rõ" : string.Join(", ", roles.Order()))}";
         CanCreate = !engagement.IsReadOnly && FieldPolicy.CanEdit(roles);
+        _status = engagement.Status;
+        _isManager = !engagement.IsReadOnly && roles.Contains(EngagementRole.EngagementManager);
+        ShowLifecycle = _isManager;
+        ShowLock = _isManager && _status == EngagementStatus.Reporting;
+        var phases = _isManager
+            ? new[] { EngagementStatus.Fieldwork, EngagementStatus.Review, EngagementStatus.Reporting }
+                .Where(target => Engagement.CanMove(_status, target)).Select(target => new PhaseItem(target)).ToList()
+            : [];
+        if (!Phases.SequenceEqual(phases))
+        {
+            Phases.Clear();
+            phases.ForEach(Phases.Add);
+        }
+
+        if (!ShowLock)
+        {
+            LockBlockers.Clear();
+            LockReady = false;
+            LockSummary = "";
+            LockCode = "";
+            LockUnderstood = false;
+            _lockDigest = null;
+        }
 
         _templates = await DirectoryStore.LatestTemplatesAsync(unit.Db, _options.TemplateLanguage, cancellationToken);
         var titles = _templates.ToDictionary(t => t.Code, t => t.Title);
@@ -196,5 +256,103 @@ public sealed partial class EngagementViewModel : ObservableObject
         _loop.Poke();
         await ReloadAsync(cancellationToken);
         SelectedPaper = Papers.FirstOrDefault(p => p.Id == id);
+    }
+
+    /// <summary>Moves the engagement to another phase. Online only; the master decides who may.</summary>
+    [RelayCommand]
+    private async Task AdvanceAsync(PhaseItem? phase, CancellationToken cancellationToken)
+    {
+        LifecycleMessage = null;
+        if (phase is null)
+        {
+            return;
+        }
+
+        var result = await _session.AdvanceEngagementAsync(EngagementId, phase.Target.ToString(), cancellationToken);
+        if (result.Value is null)
+        {
+            LifecycleMessage = result.Error?.Message ?? "Không chuyển được giai đoạn.";
+            return;
+        }
+
+        await using (var unit = await _units.OpenAsync(cancellationToken))
+        {
+            var row = await unit.Db.Engagements.FirstOrDefaultAsync(e => e.Id == EngagementId, cancellationToken);
+            if (row is not null && Enum.TryParse<EngagementStatus>(result.Value.Status, out var status))
+            {
+                row.Status = status;
+                await unit.Db.SaveChangesAsync(cancellationToken);
+            }
+        }
+
+        LifecycleMessage = $"Đã chuyển sang {result.Value.Status}.";
+        await ReloadAsync(cancellationToken);
+        if (ShowLock)
+        {
+            await RefreshLockAsync(cancellationToken);
+        }
+    }
+
+    /// <summary>Asks the master what stands between the engagement and its lock.</summary>
+    [RelayCommand]
+    private async Task RefreshLockAsync(CancellationToken cancellationToken)
+    {
+        LifecycleMessage = null;
+        var readiness = await _session.GetLockReadinessAsync(EngagementId, cancellationToken);
+        LockBlockers.Clear();
+        if (readiness is null)
+        {
+            _lockDigest = null;
+            LockReady = false;
+            LockSummary = "Không kết nối được máy chủ; việc khoá cần trực tuyến.";
+            return;
+        }
+
+        _lockDigest = readiness.Digest;
+        foreach (var blocker in readiness.Blockers)
+        {
+            LockBlockers.Add(blocker.Reason);
+        }
+
+        LockReady = readiness.Ready;
+        LockSummary = readiness.Ready
+            ? $"Đủ điều kiện: {readiness.PaperCount} giấy làm việc đã qua cả hai cấp soát xét, không còn ghi chú hay xung đột mở."
+            : $"Chưa đủ điều kiện khoá ({readiness.Blockers.Count} vướng mắc).";
+    }
+
+    private bool CanLock() => LockReady && LockUnderstood && LockCode.Length == 6 && LockCode.All(char.IsAsciiDigit);
+
+    /// <summary>
+    /// Locks the engagement for good. A fresh authenticator code is bought for the exact state shown; if anyone changed
+    /// anything since, the master refuses and the list above is refreshed.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanLock))]
+    private async Task LockAsync(CancellationToken cancellationToken)
+    {
+        LifecycleMessage = null;
+        if (_lockDigest is null)
+        {
+            return;
+        }
+
+        var result = await _session.LockEngagementAsync(EngagementId, _lockDigest, LockCode, cancellationToken);
+        LockCode = "";
+        if (result.Value is null)
+        {
+            var why = result.Error?.Message ?? "Không khoá được engagement.";
+            await RefreshLockAsync(cancellationToken);
+            LifecycleMessage = why;
+            return;
+        }
+
+        await using (var unit = await _units.OpenAsync(cancellationToken))
+        {
+            await unit.Agent.MarkLockedAsync(EngagementId, cancellationToken);
+        }
+
+        LockUnderstood = false;
+        _loop.Poke();
+        LifecycleMessage = "Engagement đã khoá. Từ giờ chỉ xem.";
+        await ReloadAsync(cancellationToken);
     }
 }
