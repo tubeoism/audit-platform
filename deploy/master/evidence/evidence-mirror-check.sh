@@ -20,13 +20,17 @@ if (( ok_ts == 0 )); then problems+=("Bản sao bằng chứng chưa từng ch�
 elif (( age_h > MAX_AGE_H )); then problems+=("Bản sao bằng chứng lần cuối chạy xong cách đây ${age_h} giờ (ngưỡng ${MAX_AGE_H}).")
 fi
 
-missing="$(runuser -u audit -- /usr/local/bin/rclone check "$SRC" evidence: --config "$CONF" --one-way --size-only \
-  --exclude '/.staging/**' --min-age "$MIN_AGE" --combined - 2>/tmp/audit-evidence-check.err | grep -E '^[-*!] ' | head -n 20 || true)"
+# Judge the run by rclone's exit code, not by grepping stderr: on a crypt remote rclone check always logs
+# "ERROR : No common hash found - not using a hash for checks" even when it succeeds (seen on v1.76.0).
+err="$STATE/evidence-check.err"
+out="$(runuser -u audit -- /usr/local/bin/rclone check "$SRC" evidence: --config "$CONF" --one-way --size-only \
+  --exclude '/.staging/**' --min-age "$MIN_AGE" --combined - 2>"$err")"; rc=$?
+missing="$(grep -E '^[-*!] ' <<<"$out" | head -n 20 || true)"
 if [[ -n "$missing" ]]; then
   problems+=("Có bằng chứng trên VM mà R2 thiếu hoặc khác kích thước (tối đa 20 dòng; '-' thiếu, '*' khác, '!' lỗi):
 $missing")
-elif grep -qiE 'failed|error' /tmp/audit-evidence-check.err 2>/dev/null; then
-  problems+=("Không đối chiếu được với R2: $(head -c 400 /tmp/audit-evidence-check.err)")
+elif (( rc != 0 )); then
+  problems+=("Không đối chiếu được với R2 (rclone check thoát với mã ${rc}): $(head -c 400 "$err")")
 fi
 
 if (( ${#problems[@]} == 0 )); then
