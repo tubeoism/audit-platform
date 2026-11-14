@@ -38,8 +38,8 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
     }
 
     /// <summary>Pushes, then pulls. Returns what the master took and what it sent back.</summary>
-    /// <param name="held">Local sequences of changes that must wait this round (links to files the master does not hold yet).</param>
-    public async Task<(int Delivered, int Received)> SyncAsync(Guid engagementId, CancellationToken cancellationToken, IReadOnlyCollection<long>? held = null)
+    /// <param name="held">Asked for the local sequences of changes that must wait this round (links to files the master does not hold yet).</param>
+    public async Task<(int Delivered, int Received)> SyncAsync(Guid engagementId, CancellationToken cancellationToken, Func<CancellationToken, Task<IReadOnlyCollection<long>>>? held = null)
     {
         var delivered = await PushPendingAsync(engagementId, cancellationToken, held);
         var received = await PullAsync(engagementId, cancellationToken);
@@ -51,9 +51,9 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
     /// master accepted or already had; they leave the outbox when the pull applies them to the replica. Safe to repeat:
     /// the master answers a redelivered change as it did the first time.
     /// </summary>
-    public async Task<int> PushPendingAsync(Guid engagementId, CancellationToken cancellationToken, IReadOnlyCollection<long>? held = null)
+    public async Task<int> PushPendingAsync(Guid engagementId, CancellationToken cancellationToken, Func<CancellationToken, Task<IReadOnlyCollection<long>>>? held = null)
     {
-        held ??= [];
+        held ??= _ => Task.FromResult<IReadOnlyCollection<long>>([]);
         if (transport.State != ConnectionState.Online)
         {
             return 0;
@@ -63,8 +63,9 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
         var sent = new HashSet<long>();
         while (true)
         {
+            var waiting = await held(cancellationToken);
             var batch = await db.Outbox
-                .Where(o => o.EngagementId == engagementId && o.State == OutboxState.Pending && !held.Contains(o.LocalSequence)
+                .Where(o => o.EngagementId == engagementId && o.State == OutboxState.Pending && !waiting.Contains(o.LocalSequence)
                     && !sent.Contains(o.LocalSequence))
                 .OrderBy(o => o.LocalSequence)
                 .Take(PushBatchSize)
@@ -72,6 +73,20 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
             if (batch.Count == 0)
             {
                 return delivered;
+            }
+
+            // A link is saved together with its file's row, so one that came into the outbox after the question above is
+            // answered by asking again now that the batch is read: it must not go before its file.
+            var late = await held(cancellationToken);
+            var skipped = batch.Where(b => late.Contains(b.LocalSequence)).ToList();
+            if (skipped.Count > 0)
+            {
+                batch.RemoveAll(skipped.Contains);
+                sent.UnionWith(skipped.Select(b => b.LocalSequence)); // Not read again this round.
+                if (batch.Count == 0)
+                {
+                    continue;
+                }
             }
 
             var result = await transport.PushAsync(engagementId, [.. batch.Select(b => b.ToEnvelope(options.ClientId))], cancellationToken);

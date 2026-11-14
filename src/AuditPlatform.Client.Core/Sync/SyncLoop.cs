@@ -304,8 +304,8 @@ public sealed class SyncLoop : IAsyncDisposable
             // Files first, then the changes that link to them: the master refuses a link to a file it does not hold.
             // A link whose file did not get through waits; the rest of the outbox does not.
             var (sent, problem) = await _evidence.UploadPendingAsync(unit.Db, engagementId, cancellationToken);
-            var held = await LocalEvidence.HeldChangesAsync(unit.Db, engagementId, cancellationToken);
-            var (delivered, received) = await unit.Agent.SyncAsync(engagementId, cancellationToken, held);
+            var (delivered, received) = await unit.Agent.SyncAsync(engagementId, cancellationToken,
+                async ct => await LocalEvidence.HeldChangesAsync(unit.Db, engagementId, ct));
             var learnt = await _evidence.RefreshAsync(unit.Db, engagementId, cancellationToken);
             return (sent + delivered + received > 0 || learnt, problem);
         }

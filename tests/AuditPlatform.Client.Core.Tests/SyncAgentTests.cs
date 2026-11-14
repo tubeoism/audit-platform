@@ -50,6 +50,28 @@ public sealed class SyncAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task A_change_that_became_held_after_the_first_look_is_not_sent_before_its_file()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var free = Change(1);
+        var link = Change(2);
+        await _agent.EnqueueAsync(free, ct);
+        await _agent.EnqueueAsync(link, ct);
+        var linkSequence = (await _db.Outbox.SingleAsync(o => o.ChangeId == link.ChangeId, ct)).LocalSequence;
+
+        // The link, with its file's row, is saved after the sender asked what to hold, and before it read the outbox:
+        // the second answer has it, the first did not.
+        var asked = 0;
+        Task<IReadOnlyCollection<long>> Held(CancellationToken _) =>
+            Task.FromResult<IReadOnlyCollection<long>>(asked++ == 0 ? [] : [linkSequence]);
+
+        Assert.Equal(1, await _agent.PushPendingAsync(Eng, ct, Held));
+
+        Assert.Equal([free.ChangeId], _transport.Pushed.Select(c => c.ChangeId));
+        Assert.Equal(OutboxState.Pending, (await _db.Outbox.SingleAsync(o => o.ChangeId == link.ChangeId, ct)).State);
+    }
+
+    [Fact]
     public async Task Push_sends_in_the_order_the_changes_were_made_whatever_the_clock_says_and_settles_each_outcome()
     {
         var ct = TestContext.Current.CancellationToken;
