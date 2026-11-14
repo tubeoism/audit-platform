@@ -254,6 +254,14 @@ public sealed class ArchiveTarTests
     }
 
     [Fact]
+    public async Task No_entry_may_carry_the_name_of_the_checksum_list_whatever_folder_it_is_in()
+    {
+        using var buffer = new MemoryStream();
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => ArchiveTar.WriteAsync(buffer, Root, [ArchiveEntry.FromBytes("papers/" + ArchiveTar.SumsFile, [1])], Modified, Ct));
+    }
+
+    [Fact]
     public async Task Duplicate_paths_and_a_hand_made_checksum_file_are_refused()
     {
         using var buffer = new MemoryStream();
