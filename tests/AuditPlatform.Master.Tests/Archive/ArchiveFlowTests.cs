@@ -2,6 +2,7 @@ using System.Formats.Tar;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AuditPlatform.AuditLog;
 using AuditPlatform.Domain.Engagements;
 using AuditPlatform.Evidence;
@@ -282,6 +283,37 @@ public sealed class ArchiveFlowTests(AuthFactory factory) : IClassFixture<AuthFa
 
         Assert.Equal("not_locked", refused.Error?.Code);
         Assert.Equal(EngagementStatus.Reporting, (await EngagementAsync(seed.Id)).Status);
+    }
+
+    [Fact]
+    public async Task The_console_commands_print_what_the_archive_script_reads_and_archive_only_a_known_package()
+    {
+        var seed = await SeedAsync();
+        var path = NewPath();
+
+        // `audit-engagement-archive` reads these two lines with awk ('$1 == "tar-sha256" { print $2 }'): keep their shape.
+        var packaged = new StringWriter();
+        Assert.Equal(0, await AdminCli.RunAsync(factory.Services, ["engagement", "package", seed.Code, path], packaged));
+        var text = packaged.ToString();
+        var tarSha = Regex.Match(text, "^tar-sha256 +([0-9a-f]{64})$", RegexOptions.Multiline).Groups[1].Value;
+        var digest = Regex.Match(text, "^package-digest +([0-9a-f]{64})$", RegexOptions.Multiline).Groups[1].Value;
+        Assert.NotEmpty(tarSha);
+        Assert.NotEmpty(digest);
+        Assert.Equal(Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(path, Ct))), tarSha);
+
+        var refused = new StringWriter();
+        Assert.Equal(1, await AdminCli.RunAsync(factory.Services, ["engagement", "archived", seed.Code, digest, new string('b', 64), "somewhere"], refused));
+        Assert.Contains("package_unknown", refused.ToString(), StringComparison.Ordinal);
+        Assert.Equal(EngagementStatus.Locked, (await EngagementAsync(seed.Id)).Status);
+
+        var done = new StringWriter();
+        Assert.Equal(0, await AdminCli.RunAsync(factory.Services, ["engagement", "archived", seed.Code, digest, tarSha, "r2:audit-archive/archive/engagements/x.tar.bin"], done));
+        Assert.Contains("Archived", done.ToString(), StringComparison.Ordinal);
+        Assert.Equal(EngagementStatus.Archived, (await EngagementAsync(seed.Id)).Status);
+
+        var again = new StringWriter();
+        Assert.Equal(1, await AdminCli.RunAsync(factory.Services, ["engagement", "archived", seed.Code, digest, tarSha, "x"], again));
+        Assert.Contains("already_archived", again.ToString(), StringComparison.Ordinal);
     }
 
     private Task<EngagementRow> EngagementAsync(Guid id) =>
