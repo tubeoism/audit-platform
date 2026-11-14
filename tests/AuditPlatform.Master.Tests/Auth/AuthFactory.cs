@@ -72,6 +72,8 @@ public sealed class AuthFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
     public const string Password = "ghe-da-xanh-luot-song-42";
     private readonly PostgresFixture _pg = new();
+    public string EvidenceRoot => _evidenceRoot;
+
     private readonly string _evidenceRoot = Path.Combine(Path.GetTempPath(), "audit-master-evidence-" + Guid.NewGuid().ToString("N"));
     private int _counter;
 

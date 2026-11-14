@@ -2,6 +2,7 @@ using System.Globalization;
 using AuditPlatform.Domain.Engagements;
 using AuditPlatform.Master.Data.Entities;
 using AuditPlatform.Master.Engagements;
+using AuditPlatform.Master.Evidence;
 
 namespace AuditPlatform.Master.Auth;
 
@@ -28,6 +29,7 @@ internal static class AdminCli
           engagement unmember <mã> <email> <vai trò> Gỡ vai trò
           templates import en|vi < tệp.md            Nhập một tệp thủ tục (ia-aup-procedures) từ stdin
           templates list                             Thư viện thủ tục đang dùng
+          evidence verify                            Băm lại mọi file bằng chứng; báo file thiếu hoặc bị sửa (sau khôi phục, hoặc định kỳ)
 
         --show-link in liên kết ra màn hình, dùng khi e-mail không gửi được.
         """;
@@ -148,6 +150,26 @@ internal static class AdminCli
                 }
 
                 return 0;
+
+            case ["evidence", "verify"]:
+            {
+                var verified = await scope.ServiceProvider.GetRequiredService<EvidenceService>().VerifyAllAsync(
+                    Environment.GetEnvironmentVariable("AUDIT_ADMIN_OPERATOR") is { Length: > 0 } who ? who : "unknown", ct);
+                await output.WriteLineAsync(string.Create(CultureInfo.InvariantCulture,
+                    $"Đã kiểm tra {verified.Checked} file ({verified.Bytes / (1024.0 * 1024):0.#} MB đã đọc và khớp mã băm)."));
+                foreach (var hash in verified.Missing)
+                {
+                    await output.WriteLineAsync($"THIẾU     {hash}");
+                }
+
+                foreach (var hash in verified.Damaged)
+                {
+                    await output.WriteLineAsync($"BỊ SỬA    {hash}");
+                }
+
+                await output.WriteLineAsync(verified.IsClean ? "OK. Đã ghi audit log." : "CÓ VẤN ĐỀ: khôi phục các file trên từ bản sao R2 (RESTORE.md), rồi chạy lại. Đã ghi audit log.");
+                return verified.IsClean ? 0 : 1;
+            }
 
             default:
                 await output.WriteLineAsync(Usage);

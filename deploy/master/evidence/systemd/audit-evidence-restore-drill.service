@@ -1,0 +1,10 @@
+[Unit]
+Description=Read a sample of the evidence mirror back from R2 and compare it with the VM
+After=network-online.target
+Wants=network-online.target
+OnFailure=audit-backup-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/audit-evidence-restore-drill
+TimeoutStartSec=2h

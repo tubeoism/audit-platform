@@ -1,0 +1,9 @@
+[Unit]
+Description=Check that the evidence mirror on R2 is complete and current; alert by e-mail on problems
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/audit-evidence-mirror-check
+TimeoutStartSec=30min
