@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Text;
 using System.Text.Encodings.Web;
 using AuditPlatform.Master.Data.Entities;
@@ -143,7 +144,9 @@ internal static class AccountPages
     {
         using var generator = new QRCodeGenerator();
         using var data = generator.CreateQrCode(enrolment.OtpAuthUri, QRCodeGenerator.ECCLevel.M);
-        var svg = new SvgQRCode(data).GetGraphic(5);
+        // Scale through a viewBox: a fixed width/height would be cut off by the 220 px box in the style sheet,
+        // because an otpauth URI needs a symbol wider than that (285 px at 5 px per module).
+        var svg = new SvgQRCode(data).GetGraphic(new Size(220, 220), "#000000", "#FFFFFF", true, SvgQRCode.SizingMode.ViewBoxAttribute);
         var secret = string.Join(' ', enrolment.SecretBase32.Chunk(4).Select(c => new string(c)));
         return Page("Cài mã xác thực hai lớp", "Enrol two-factor authentication",
             P("Bước 2/3. Mở Microsoft Authenticator hoặc Google Authenticator, chọn thêm tài khoản và quét mã QR này.",

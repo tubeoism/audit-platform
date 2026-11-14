@@ -63,6 +63,13 @@ public sealed class AuthFlowTests(AuthFactory factory) : IClassFixture<AuthFacto
         Assert.Contains("role=\"alert\"", retry, StringComparison.Ordinal);
         Assert.Contains("name=\"ticket\"", retry, StringComparison.Ordinal);
 
+        // The QR code must scale to the page's 220 px box: a fixed width/height on the svg cuts the symbol off and
+        // authenticator apps cannot read it.
+        var svgTag = System.Text.RegularExpressions.Regex.Match(retry, "<svg[^>]*>").Value;
+        Assert.Contains("viewBox=\"0 0 220 220\"", svgTag, StringComparison.Ordinal);
+        Assert.DoesNotContain(" width=", svgTag, StringComparison.Ordinal);
+        Assert.DoesNotContain(" height=", svgTag, StringComparison.Ordinal);
+
         var codes = await AuthFactory.ConfirmAsync(client, token, ticket, Totp.Compute(secret, Totp.StepAt(factory.Clock.GetUtcNow())));
         Assert.Equal(10, codes.Count);
         Assert.Equal(10, codes.Distinct().Count());
