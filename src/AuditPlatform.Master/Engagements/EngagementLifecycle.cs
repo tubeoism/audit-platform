@@ -110,6 +110,9 @@ public sealed class EngagementLifecycle(MasterDbContext db, IAuditLog auditLog, 
             return new AuthFailure("digest_invalid", "Digest phải là 64 ký tự hex. / A digest is 64 hexadecimal characters.");
         }
 
+        // One spelling in the audit log, whatever was typed.
+        packageDigest = packageDigest.ToLowerInvariant();
+        tarSha256 = tarSha256.ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(location) || location.Length > 500)
         {
             return new AuthFailure("location_invalid", "Cần ghi rõ nơi lưu gói (tối đa 500 ký tự). / Say where the package is stored (at most 500 characters).");

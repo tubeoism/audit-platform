@@ -130,7 +130,7 @@ public sealed class ArchiveFlowTests(AuthFactory factory) : IClassFixture<AuthFa
 
         Assert.True(packaged.Succeeded, packaged.Error?.Message);
         var info = packaged.Value!;
-        Assert.Equal((1, 1, 1, 1), (info.Papers, info.Changes, info.EvidenceFiles, info.AuditEntries - 1));
+        Assert.Equal((1, 1, 1, 1), (info.Papers, info.Changes, info.EvidenceFiles, info.AuditEntries));   // the audit entry is the lock
         Assert.False(File.Exists(path + ".part"));
         Assert.Equal(Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(path, Ct))), info.TarSha256);
 
