@@ -4,6 +4,8 @@
 # the mirror too (audit-set-secrets does not call this; run it after rotating).
 #   [r2]       R2 as an S3 endpoint
 #   [evidence] client-side encryption (rclone crypt: NaCl secretbox) over r2:audit-live/evidence
+#   [archive]  the same encryption (same key) over r2:audit-archive/archive/engagements, where audit-engagement-archive
+#              puts the packages of locked engagements. The bucket is immutable for 10 years: nothing here deletes or overwrites.
 # File names are not encrypted: they are BLAKE3 hashes of the content and reveal nothing. Contents are.
 # The file is root:audit 0640 because the mirror runs rclone as the unprivileged `audit` user. Values are never printed.
 set -euo pipefail
@@ -20,6 +22,8 @@ key="$(tr -d '[:space:]' < "$OUT_DIR/crypt.key")"
 salt="$(printf '%s' "${key}audit-evidence-salt" | sha256sum | cut -d' ' -f1)"
 tmp="$(mktemp "$OUT_DIR/.rclone.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
+pw="$(printf '%s' "$key" | /usr/local/bin/rclone obscure -)"
+pw2="$(printf '%s' "$salt" | /usr/local/bin/rclone obscure -)"
 {
   echo "[r2]"
   echo "type = s3"
@@ -34,8 +38,16 @@ trap 'rm -f "$tmp"' EXIT
   echo "remote = r2:${BUCKET_PATH}"
   echo "filename_encryption = off"
   echo "directory_name_encryption = false"
-  echo "password = $(printf '%s' "$key" | /usr/local/bin/rclone obscure -)"
-  echo "password2 = $(printf '%s' "$salt" | /usr/local/bin/rclone obscure -)"
+  echo "password = $pw"
+  echo "password2 = $pw2"
+  echo
+  echo "[archive]"
+  echo "type = crypt"
+  echo "remote = r2:audit-archive/archive/engagements"
+  echo "filename_encryption = off"
+  echo "directory_name_encryption = false"
+  echo "password = $pw"
+  echo "password2 = $pw2"
 } > "$tmp"
 chown root:audit "$tmp"; chmod 0640 "$tmp"; mv -f "$tmp" "$OUT_DIR/rclone.conf"; trap - EXIT
 echo "rclone config written to $OUT_DIR/rclone.conf (remote: r2:${BUCKET_PATH}, contents encrypted)"

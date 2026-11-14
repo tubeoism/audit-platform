@@ -87,6 +87,15 @@ for f in IA_AUP_Standard_En/[0-9]*.md; do sudo audit-admin templates import en <
 
 Who may do what inside an engagement is the table "Authorisation" in [ADR-0004](docs/adr/0004-sync-model.md).
 
+When an engagement is locked, its file is packaged into the immutable `audit-archive` bucket and marked `Archived`:
+
+```bash
+sudo audit-engagement-archive ENG-2026-014 --package-only   # builds and checks the package, uploads nothing
+sudo audit-engagement-archive ENG-2026-014                  # package, encrypted upload, read-back, then Archived (asks you to type the code)
+```
+
+Objects in `audit-archive` cannot be deleted for 10 years, so do the first one with `--package-only`. See [docs/engagement-archive.md](docs/engagement-archive.md).
+
 ## Client
 
 `dotnet run --project src/AuditPlatform.Client.Wpf` (Windows). Settings in `appsettings.json`: `Client:MasterUrl`, `Client:TemplateLanguage` (`vi` or `en`). Data is under `%LOCALAPPDATA%\AuditPlatform` (SQLite database, DPAPI-protected session); the volume must be BitLocker-encrypted.

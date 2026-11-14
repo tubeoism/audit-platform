@@ -32,9 +32,12 @@ install -o root -g root -m 0755 "$HERE/evidence-config.sh"        /usr/local/sbi
 install -o root -g root -m 0755 "$HERE/evidence-mirror.sh"        /usr/local/sbin/audit-evidence-mirror
 install -o root -g root -m 0755 "$HERE/evidence-mirror-check.sh"  /usr/local/sbin/audit-evidence-mirror-check
 install -o root -g root -m 0755 "$HERE/evidence-restore-drill.sh" /usr/local/sbin/audit-evidence-restore-drill
+install -o root -g root -m 0755 "$HERE/engagement-archive.sh"      /usr/local/sbin/audit-engagement-archive
 
 log "Encryption key (32 random bytes; generated once, never printed)"
 install -d -o root -g audit -m 0750 /etc/audit-evidence
+# Where audit-engagement-archive builds a package before it is uploaded (audit-admin runs as `audit` and creates no folders).
+install -d -o audit -g audit -m 0750 /srv/audit/archive-staging
 if [[ ! -s /etc/audit-evidence/crypt.key ]]; then
   (umask 027; openssl rand -hex 32 > /etc/audit-evidence/crypt.key)
   chown root:audit /etc/audit-evidence/crypt.key; chmod 0640 /etc/audit-evidence/crypt.key

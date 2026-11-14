@@ -5,24 +5,42 @@ lost or restored to an older state. Archiving takes the finished file out of tha
 checked, stored in the R2 bucket `audit-archive` (object lock, immutable for 10 years), and only then is the engagement
 marked `Archived`. A correction after the lock is made as an addendum in a new engagement; the archive is never edited.
 
-This document describes the master side (the package and the status change). The upload to `audit-archive` is a separate
-step on the VM and is **not built yet**; until it is, `engagement archived` must not be run.
+The master builds the package and changes the status (`audit-admin engagement package|archived`); the script
+`audit-engagement-archive` on the VM runs the whole sequence, including the upload.
 
-## Three steps, in this order
+## Steps, in this order
 
-| # | Command (on the VM, as administrator) | What it does | Changes the engagement? |
-|---|---|---|---|
-| 1 | `sudo audit-admin engagement package <code> /srv/audit/archive-staging/<code>.tar` | Builds the package, reads it back and checks every file against `SHA256SUMS`, prints `tar-sha256` and `package-digest` | No |
-| 2 | upload the tar to `audit-archive` and check that the object there hashes to `tar-sha256` | Not built yet | No |
-| 3 | `sudo audit-admin engagement archived <code> <package-digest> <tar-sha256> "<where it is stored>"` | `Locked -> Archived` | Yes, once, and it cannot be taken back |
+| # | What | Changes the engagement? |
+|---|---|---|
+| 1 | `audit-admin engagement package <code> <file.tar>` builds the package, reads it back and checks every file against `SHA256SUMS`, prints `tar-sha256` and `package-digest` | No |
+| 2 | Upload to `r2:audit-archive/archive/engagements/<code>/<file>.tar.bin`, encrypted with the evidence key (rclone crypt, remote `archive`), never overwriting | No |
+| 3 | Read the object back from R2, decrypt it, hash it: must equal `tar-sha256` | No |
+| 4 | `audit-admin engagement archived <code> <package-digest> <tar-sha256> "<where it is stored>"`: `Locked -> Archived` | Yes, once, and it cannot be taken back |
 
-Order matters: `Archived` has to mean "a verified copy exists in the immutable archive". Step 3 accepts only a package
+`sudo audit-engagement-archive <code>` runs 1 to 4; `--package-only` stops after step 1 and leaves the tar in
+`/srv/audit/archive-staging` for inspection (do this the first time) and prints the command that uploads exactly that package:
+`--resume <tar> <tar-sha256> <package-digest>` (steps 2 to 4, no second packaging). The upload asks you to type the
+engagement code (`--yes` skips the question). The code may contain any characters the master accepts; file names and remote
+paths use a plain version of it.
+
+When something goes wrong after the upload the script keeps the tar and says so, because running everything again would put
+a second permanent copy in the bucket:
+- the read-back differs, or cannot be done: nothing is marked archived and the object stays in the bucket;
+- the read-back is fine but `engagement archived` fails: the script prints the exact `audit-admin engagement archived ...`
+  command to run once the cause is fixed.
+
+Order matters: `Archived` has to mean "a verified copy exists in the immutable archive". Step 4 accepts only a package
 the master itself built and recorded in step 1 (`engagement.archive.packaged`, with both digests); invented or mistyped
 digests are refused and logged.
 
-The output must be under `/srv/audit`, in a folder the `audit` user can write: `audit-admin` runs as that user in a
-sandbox that can write nowhere else, and it does not create folders. Create one first:
-`sudo install -d -o audit -g audit -m 0750 /srv/audit/archive-staging`.
+**Objects in `audit-archive` cannot be deleted or overwritten for 10 years.** File names carry a timestamp so that nothing
+is overwritten, and a failed attempt leaves its object behind. The same evidence key as the mirror encrypts the packages:
+losing it loses the archive as well as the mirror. Packages are read back with the commands in the "Gói lưu trữ" section
+of `deploy/master/backup/RESTORE.md`.
+
+The output of step 1 must be under `/srv/audit`, in a folder the `audit` user can write: `audit-admin` runs as that user in a
+sandbox that can write nowhere else, and it does not create folders. `evidence-setup.sh` creates `/srv/audit/archive-staging`
+for `audit-engagement-archive`; by hand: `sudo install -d -o audit -g audit -m 0750 /srv/audit/archive-staging`.
 
 ## What is checked before a byte is written
 
@@ -73,7 +91,8 @@ master does not know), `engagement.archived` (digests, where it is stored, which
 
 ## Not done yet
 
-- The upload to `audit-archive` (encryption, the R2 token's reach, checking the object after upload) and the script that
-  runs steps 1 to 3 together.
-- A restore/read-back drill for the archive, like the ones for the database and the evidence mirror.
+- The first real run. The script is tested only against stand-ins for `rclone` and `audit-admin`; the R2 token's rights on
+  `audit-archive/archive/engagements` (multipart upload under the bucket lock) are untested. Use `--package-only` first,
+  then a real upload with a small engagement.
+- A read-back drill for the archive, like the ones for the database and the evidence mirror.
 - The client does not show `Archived` differently from `Locked` (both read-only).
