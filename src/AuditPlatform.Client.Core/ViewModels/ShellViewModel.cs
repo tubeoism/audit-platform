@@ -62,6 +62,15 @@ public sealed partial class ShellViewModel : ObservableObject
     [ObservableProperty]
     private string? _lastError;
 
+    /// <summary>A neutral message about something the user just did (not an error).</summary>
+    [ObservableProperty]
+    private string? _notice;
+
+    /// <summary>True while some engagement has stopped synchronising because this laptop's copy no longer follows the master.</summary>
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(RebuildCommand))]
+    private bool _needsRebuild;
+
     [ObservableProperty]
     private EngagementItem? _selectedEngagement;
 
@@ -146,6 +155,28 @@ public sealed partial class ShellViewModel : ObservableObject
     private void SyncNow() => _loop.Poke();
 
     /// <summary>
+    /// Rebuilds the copy of every engagement that stopped following the master, e.g. after the master was restored
+    /// from an older backup. Nothing the user did is lost: unsent changes stay, and changes the old master had
+    /// accepted that the restored one may lack are sent again.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(NeedsRebuild))]
+    private async Task RebuildAsync(CancellationToken cancellationToken)
+    {
+        var stopped = _loop.Stopped.Keys.ToList();
+        var resent = 0;
+        foreach (var id in stopped)
+        {
+            resent += (await _loop.RebuildAsync(id, cancellationToken)).Resubmitted;
+        }
+
+        NeedsRebuild = _loop.Stopped.Count > 0;
+        LastError = null;
+        Notice = resent > 0
+            ? $"Đã dựng lại {stopped.Count} engagement từ master; {resent} thay đổi của bạn được gửi lại."
+            : $"Đã dựng lại {stopped.Count} engagement từ master. Không có thay đổi nào của bạn bị mất.";
+    }
+
+    /// <summary>
     /// Signs out. Refused while this user has unsent changes: the next person on this laptop must not be able to
     /// send them under their own name.
     /// </summary>
@@ -194,5 +225,12 @@ public sealed partial class ShellViewModel : ObservableObject
 
         // Being offline is a normal way to work, not an error to show.
         LastError = status.Connection == ConnectionState.Online ? status.Error : null;
+
+        // A stopped engagement is not retried on its own: the user chooses to rebuild it.
+        NeedsRebuild = _loop.Stopped.Count > 0;
+        if (NeedsRebuild)
+        {
+            Notice = null;
+        }
     }
 }

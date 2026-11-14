@@ -111,6 +111,34 @@ public sealed class SyncLoop : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Rebuilds this laptop's copy of an engagement from the master and lets synchronisation of it resume. It waits for
+    /// a round in progress, keeps everything the author did (<see cref="LocalReplica.RebuildAsync"/>) and works offline;
+    /// the next round pushes what has to be sent again and pulls the log from the start.
+    /// </summary>
+    public async Task<ReplicaRebuild> RebuildAsync(Guid engagementId, CancellationToken cancellationToken)
+    {
+        await _round.WaitAsync(cancellationToken);
+        ReplicaRebuild result;
+        try
+        {
+            await using var unit = await _units.OpenAsync(cancellationToken);
+            result = await unit.Replica.RebuildAsync(engagementId, _options.ClientId, cancellationToken);
+            lock (_gate)
+            {
+                _stopped.Remove(engagementId);
+            }
+        }
+        finally
+        {
+            _round.Release();
+        }
+
+        DataChanged?.Invoke(this, EventArgs.Empty);
+        Poke();
+        return result;
+    }
+
     /// <summary>One round. Never throws for an unreachable or refusing master: the outcome is in <see cref="Status"/>.</summary>
     public async Task RunOnceAsync(CancellationToken cancellationToken)
     {

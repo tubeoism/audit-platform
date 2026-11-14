@@ -40,6 +40,15 @@ public sealed class LocalReplicaTests : IDisposable
         new(Guid.NewGuid(), Eng, Paper, author, Guid.NewGuid(), DateTimeOffset.UtcNow, FieldPayload.Kind, FieldPayload.Encode(op),
             sequence ?? ++_sequence, DateTimeOffset.UtcNow);
 
+    private ChangeEnvelope FromClient(Guid client, Guid author, FieldOp op) =>
+        FromMaster(author, op) with { ClientId = client };
+
+    private static OutboxChangeRow Outbox(ChangeEnvelope change, OutboxState state = OutboxState.Pending, string? error = null) => new()
+    {
+        ChangeId = change.ChangeId, EngagementId = change.EngagementId, DocumentId = change.DocumentId, AuthorUserId = change.AuthorUserId,
+        CreatedAt = change.CreatedAt, PayloadKind = change.PayloadKind, Payload = change.Payload, State = state, LastError = error,
+    };
+
     private async Task<ChangeEnvelope[]> SeedAsync()
     {
         ChangeEnvelope[] log =
@@ -139,5 +148,65 @@ public sealed class LocalReplicaTests : IDisposable
         await _replica.ApplyAsync(Eng, [resolved], Ct);
         Assert.Empty(await _db.Outbox.AsNoTracking().ToListAsync(Ct));
         Assert.Equal("2", (await _replica.GetDocumentAsync(Eng, Paper, Ct)).Value("exceptions_noted"));
+    }
+
+    [Fact]
+    public async Task A_rebuild_empties_the_replica_and_resubmits_the_laptops_own_changes_before_the_ones_still_waiting()
+    {
+        var me = Guid.NewGuid();
+        ChangeEnvelope[] log =
+        [
+            FromClient(me, Preparer, new CreatePaper("AUP-CSH-03", 1, Preparer)),
+            FromClient(me, Preparer, new SetField("exceptions_noted", "0", null)),
+            FromClient(Guid.NewGuid(), Manager, new SetField("sample_size", "25", null)),   // somebody else's laptop
+        ];
+        await _replica.ApplyAsync(Eng, log, Ct);
+        _db.SyncState.Add(new SyncStateRow { EngagementId = Eng, LastPulledSequence = 3, LastSyncedAt = DateTimeOffset.UtcNow });
+        var waiting = FromMaster(Preparer, new SetField("exceptions_noted", "1", log[1].ChangeId));
+        var flagged = FromMaster(Preparer, new SetField("sample_size", "30", null));
+        var refused = FromMaster(Preparer, new SetField("sample_size", "31", null));
+        _db.Outbox.Add(Outbox(waiting));
+        _db.Outbox.Add(Outbox(flagged, OutboxState.Conflict, "flagged"));
+        _db.Outbox.Add(Outbox(refused, OutboxState.Rejected, "refused"));
+        await _db.SaveChangesAsync(Ct);
+
+        var report = await _replica.RebuildAsync(Eng, me, Ct);
+
+        Assert.Equal(new ReplicaRebuild(Resubmitted: 2, PendingKept: 1), report);
+        Assert.Empty(await _db.ReplicaLog.ToListAsync(Ct));
+        Assert.Empty(await _db.Documents.ToListAsync(Ct));
+        var cursor = await _db.SyncState.SingleAsync(Ct);
+        Assert.Equal((0L, null), (cursor.LastPulledSequence, cursor.LastSyncedAt));
+        var pending = await _db.Outbox.Where(o => o.State == OutboxState.Pending).OrderBy(o => o.LocalSequence).Select(o => o.ChangeId).ToListAsync(Ct);
+        Assert.Equal([log[0].ChangeId, log[1].ChangeId, waiting.ChangeId], pending);
+        var kept = await _db.Outbox.Where(o => o.State != OutboxState.Pending).OrderBy(o => o.State).ToListAsync(Ct);
+        Assert.Equal([(flagged.ChangeId, OutboxState.Conflict, "flagged"), (refused.ChangeId, OutboxState.Rejected, "refused")],
+            kept.Select(o => (o.ChangeId, o.State, o.LastError)));
+    }
+
+    [Fact]
+    public async Task A_rebuild_does_not_resubmit_what_is_still_in_the_outbox_and_leaves_other_engagements_alone()
+    {
+        var me = Guid.NewGuid();
+        var mine = FromClient(me, Preparer, new CreatePaper("AUP-CSH-03", 1, Preparer));
+        await _replica.ApplyAsync(Eng, [mine], Ct);
+        _db.Outbox.Add(Outbox(mine));   // accepted by the master, waiting for the pull to settle it
+        var other = Guid.NewGuid();
+        _db.ReplicaLog.Add(new ReplicaChangeRow
+        {
+            EngagementId = other, Sequence = 1, ChangeId = Guid.NewGuid(), DocumentId = Guid.NewGuid(), AuthorUserId = Preparer, ClientId = me,
+            ClientCreatedAt = DateTimeOffset.UtcNow, PayloadKind = FieldPayload.Kind, Payload = [1],
+        });
+        _db.Documents.Add(new LocalDocumentRow { DocumentId = Guid.NewGuid(), EngagementId = other, TemplateCode = "X", Status = "Draft", ContentHash = "h", State = "{}" });
+        _db.SyncState.Add(new SyncStateRow { EngagementId = other, LastPulledSequence = 1 });
+        await _db.SaveChangesAsync(Ct);
+
+        var report = await _replica.RebuildAsync(Eng, me, Ct);
+
+        Assert.Equal(new ReplicaRebuild(Resubmitted: 0, PendingKept: 1), report);
+        Assert.Equal([mine.ChangeId], await _db.Outbox.Select(o => o.ChangeId).ToListAsync(Ct));
+        Assert.Equal(1, await _db.ReplicaLog.CountAsync(r => r.EngagementId == other, Ct));
+        Assert.Equal(1, await _db.Documents.CountAsync(d => d.EngagementId == other, Ct));
+        Assert.Equal(1L, (await _db.SyncState.SingleAsync(s => s.EngagementId == other, Ct)).LastPulledSequence);
     }
 }

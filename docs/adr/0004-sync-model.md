@@ -178,6 +178,34 @@ Limits and choices of this slice:
 1. Run the evidence mirror setup on the VM and store its key offline; later, package closed engagements into the locked `audit-archive`.
 2. Review notes and sign-off screens (the engine and the API exist); in-app notice of a broken seal beyond the status line.
 3. API and screen to lock an engagement; the engine and the client honour the status as soon as one does.
-4. Rebuild procedure for a replica that diverged or is ahead of a restored master (the loop stops and reports it).
+4. ~~Rebuild procedure for a replica that diverged or is ahead of a restored master~~ Done 2026-11-14: see "Rebuilding a replica" below.
 5. Engagement administration from the client for administrators (console commands exist).
 6. Evidence: upload in parts for files over 95 MB; "keep this engagement's evidence on this laptop"; source of the file in the intake record.
+
+## Rebuilding a replica (2026-11-14)
+
+A replica that cannot follow the master stops (`ReplicaDivergedException`: a gap, a change it cannot read, a sign-off whose
+hash it recomputes differently). Until now it stayed stopped with no way out. There are now two things:
+
+**Detecting a master that was restored from an older backup.** The master already refused a cursor beyond the end of its
+log. That is not enough: after a restore the master grows past the laptop with *different* changes, and the numbers line
+up while the histories do not. The pull cursor now carries the id of the last change the replica holds
+(`SyncCursor.AnchorChangeId`, taken from the replica's own log, no schema change); the master compares it with the change
+it has at that position and answers both cases with the error code `replica_must_rebuild`
+(`ReplicaAheadOfMasterException`, `ReplicaDivergedFromMasterException`). A client that sends no id (an older one) skips
+the check. The client turns the code into the same stop as any other divergence, with a message that says what to do.
+
+**Rebuilding.** The shell shows "Dựng lại từ master" while any engagement is stopped (`SyncLoop.RebuildAsync`,
+`LocalReplica.RebuildAsync`). It throws away that engagement's replica log, documents and cursor, so the next round reads
+the log from the start, and it keeps everything the author did:
+
+| What | Treatment |
+|---|---|
+| Changes waiting in the outbox | Stay, in the same order |
+| Changes this laptop made that the old master had accepted (in the replica log, not in the outbox) | Go back into the outbox, **before** the waiting ones. A restored master may lack them; the master answers each as it answers any push: Duplicate if it has it, otherwise it decides it again (and may flag a conflict, which the author sees) |
+| Flagged and refused changes | Keep their state and reason |
+| Evidence files, the directory, other engagements | Untouched |
+
+Limits: only changes made on *this* installation are re-sent (rows carry the client id); another laptop's work that the
+restored master lost has to be re-sent by that laptop, which will be told to rebuild by the same check. The master side of
+a restore (what the backup lost) is a matter for `RESTORE.md`, not for the clients.

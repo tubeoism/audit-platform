@@ -27,9 +27,37 @@ public sealed record ChangeEnvelope(
     DateTimeOffset? ReceivedAt = null);
 
 /// <summary>Monotonic position in the master's per-engagement change sequence.</summary>
-public readonly record struct SyncCursor(long Sequence)
+/// <param name="Sequence">The last change the caller has.</param>
+/// <param name="AnchorChangeId">
+/// The id of that change, as the caller holds it. The master checks that its own log has the same change at that
+/// position: after a restore from an older backup the sequence numbers still line up while the history behind them is
+/// different, and only the id shows it. Null (an older client, or the start of the log) skips the check.
+/// </param>
+public readonly record struct SyncCursor(long Sequence, Guid? AnchorChangeId = null)
 {
     public static SyncCursor Start => new(0);
+}
+
+/// <summary>Stable error codes of the sync API, carried at the start of the message of a hub error.</summary>
+public static class SyncErrors
+{
+    /// <summary>The replica and the master no longer share a history (the replica is ahead of a restored master, or holds other changes at the same positions). The replica has to be rebuilt from the master.</summary>
+    public const string ReplicaMustRebuild = "replica_must_rebuild";
+
+    /// <summary>True when an error from the master says the replica must be rebuilt.</summary>
+    public static bool IsRebuildSignal(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        for (Exception? e = exception; e is not null; e = e.InnerException)
+        {
+            if (e.Message.Contains(ReplicaMustRebuild, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
 
 public enum ChangeOutcome

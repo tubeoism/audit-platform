@@ -13,6 +13,10 @@ namespace AuditPlatform.Client.Core.Sync;
 /// </summary>
 public sealed class ReplicaDivergedException(string message, Exception? inner = null) : Exception(message, inner);
 
+/// <param name="Resubmitted">Changes this laptop made that the old master had accepted, put back in the outbox to be sent again.</param>
+/// <param name="PendingKept">Changes that were already waiting in the outbox.</param>
+public sealed record ReplicaRebuild(int Resubmitted, int PendingKept);
+
 public sealed class SealBrokenEventArgs(Guid engagementId, Guid documentId, Guid changeId, Guid changedBy, IReadOnlyList<SignOffRecord> brokenSignOffs) : EventArgs
 {
     public Guid EngagementId { get; } = engagementId;
@@ -45,6 +49,69 @@ public sealed class LocalReplica(LocalDbContext db) : ILocalChangeSink
             .Select(d => d.State)
             .FirstOrDefaultAsync(cancellationToken);
         return state is null ? new FieldDocument(documentId, engagementId) : FieldDocument.FromJson(state);
+    }
+
+    /// <summary>
+    /// Throws away this laptop's copy of the engagement's log and documents so that the next pull reads them again from
+    /// the master, for a replica that cannot follow the master (a gap, an unreadable change) or whose history is not the
+    /// master's any more (the master was restored from an older backup). Nothing the author did is lost:
+    /// <list type="bullet">
+    /// <item>changes still waiting in the outbox stay there, and keep their order;</item>
+    /// <item>changes this laptop made that the old master had accepted (they are in the replica's log, not in the outbox)
+    /// go back to the outbox, before the waiting ones, because a restored master may no longer have them. The master
+    /// answers each as it would any push: a duplicate if it has it, otherwise it decides it again and may flag a conflict;</item>
+    /// <item>flagged and refused changes keep their state and their reason.</item>
+    /// </list>
+    /// Evidence files and the directory are not touched.
+    /// </summary>
+    /// <param name="clientId">This installation's id: the log rows it authored carry it.</param>
+    public async Task<ReplicaRebuild> RebuildAsync(Guid engagementId, Guid clientId, CancellationToken cancellationToken)
+    {
+        // Entities the context still tracks would be stale after the delete below.
+        db.ChangeTracker.Clear();
+        await using var tx = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        var own = await db.ReplicaLog.AsNoTracking()
+            .Where(r => r.EngagementId == engagementId && r.ClientId == clientId)
+            .OrderBy(r => r.Sequence)
+            .ToListAsync(cancellationToken);
+        var outbox = await db.Outbox.AsNoTracking().Where(o => o.EngagementId == engagementId).ToListAsync(cancellationToken);
+        var known = outbox.Select(o => o.ChangeId).ToHashSet();
+        var pending = outbox.Where(o => o.State == OutboxState.Pending).OrderBy(o => o.LocalSequence).ToList();
+
+        await db.ReplicaLog.Where(r => r.EngagementId == engagementId).ExecuteDeleteAsync(cancellationToken);
+        await db.Documents.Where(d => d.EngagementId == engagementId).ExecuteDeleteAsync(cancellationToken);
+        await db.SyncState.Where(s => s.EngagementId == engagementId)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.LastPulledSequence, 0L).SetProperty(x => x.LastSyncedAt, (DateTimeOffset?)null), cancellationToken);
+
+        // The waiting changes are put back after the resubmitted ones: the outbox is pushed in the order of its rows,
+        // and the earlier changes have to reach the master first.
+        await db.Outbox.Where(o => o.EngagementId == engagementId && o.State == OutboxState.Pending).ExecuteDeleteAsync(cancellationToken);
+        var resubmit = own.Where(r => !known.Contains(r.ChangeId)).ToList();
+        foreach (var row in resubmit)
+        {
+            db.Outbox.Add(new OutboxChangeRow
+            {
+                ChangeId = row.ChangeId, EngagementId = engagementId, DocumentId = row.DocumentId, AuthorUserId = row.AuthorUserId,
+                CreatedAt = row.ClientCreatedAt, PayloadKind = row.PayloadKind, Payload = row.Payload, State = OutboxState.Pending,
+            });
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        foreach (var row in pending)
+        {
+            db.Outbox.Add(new OutboxChangeRow
+            {
+                ChangeId = row.ChangeId, EngagementId = engagementId, DocumentId = row.DocumentId, AuthorUserId = row.AuthorUserId,
+                CreatedAt = row.CreatedAt, PayloadKind = row.PayloadKind, Payload = row.Payload, State = OutboxState.Pending,
+                Attempts = row.Attempts,
+            });
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        await tx.CommitAsync(cancellationToken);
+        db.ChangeTracker.Clear();
+        return new ReplicaRebuild(resubmit.Count, pending.Count);
     }
 
     /// <summary>Folds the local copy of the log from the beginning, ignoring the stored document. For verification and rebuild.</summary>

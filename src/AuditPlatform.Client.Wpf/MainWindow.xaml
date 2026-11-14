@@ -13,6 +13,9 @@
     <Border DockPanel.Dock="Top" Background="#F3F5F8" BorderBrush="#D5DAE1" BorderThickness="0,0,0,1" Padding="12,8">
       <DockPanel>
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+          <Button Content="Dựng lại từ master" Command="{Binding RebuildCommand}" Margin="0,0,8,0"
+                  Visibility="{Binding NeedsRebuild, Converter={StaticResource Present}}"
+                  ToolTip="Bản sao trên máy này không còn khớp với master. Dựng lại không làm mất thay đổi nào của bạn." />
           <Button Content="Đồng bộ ngay" Command="{Binding SyncNowCommand}" Margin="0,0,8,0" />
           <Button Content="Đăng xuất" Command="{Binding SignOutCommand}" />
         </StackPanel>
@@ -29,6 +32,9 @@
       <StatusBarItem HorizontalAlignment="Right">
         <TextBlock Text="{Binding LastError}" Foreground="Firebrick" TextTrimming="CharacterEllipsis" MaxWidth="560"
                    ToolTip="{Binding LastError}" />
+      </StatusBarItem>
+      <StatusBarItem HorizontalAlignment="Right" Visibility="{Binding Notice, Converter={StaticResource Present}}">
+        <TextBlock Text="{Binding Notice}" TextTrimming="CharacterEllipsis" MaxWidth="560" ToolTip="{Binding Notice}" />
       </StatusBarItem>
     </StatusBar>
 

@@ -135,11 +135,35 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
             await db.SaveChangesAsync(cancellationToken);
         }
 
+        // The id of the last change this replica holds goes with the cursor, so the master can tell a restored history
+        // from the one this laptop followed (sequence numbers alone line up after a restore).
+        Guid? anchor = state.LastPulledSequence > 0
+            ? await db.ReplicaLog.AsNoTracking()
+                .Where(r => r.EngagementId == engagementId && r.Sequence == state.LastPulledSequence)
+                .Select(r => (Guid?)r.ChangeId)
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
+
         var received = 0;
         PullResult page;
         do
         {
-            page = await transport.PullAsync(engagementId, new SyncCursor(state.LastPulledSequence), PullBatchSize, cancellationToken);
+            try
+            {
+                page = await transport.PullAsync(engagementId, new SyncCursor(state.LastPulledSequence, anchor), PullBatchSize, cancellationToken);
+            }
+            catch (Exception ex) when (SyncErrors.IsRebuildSignal(ex))
+            {
+                throw new ReplicaDivergedException(
+                    "Bản sao trên máy này không còn khớp với master (master có thể đã được khôi phục từ bản sao lưu cũ). "
+                    + "Hãy dựng lại bản sao từ master; thay đổi chưa gửi của bạn được giữ lại. / "
+                    + "This replica no longer matches the master; rebuild it from the master. Your unsent changes are kept.", ex);
+            }
+
+            if (page.Changes.Count > 0)
+            {
+                anchor = page.Changes[^1].ChangeId;
+            }
 
             // One transaction per page: the replica and the cursor move together, so a crash in between cannot
             // apply a page twice or skip one.

@@ -28,7 +28,14 @@ public sealed record SignOffAttempt(SignOffStatus Status, string? Reason, Guid C
 
 /// <summary>The client's cursor is beyond the end of the master's log, e.g. after the master was restored from a backup.</summary>
 public sealed class ReplicaAheadOfMasterException(long clientSequence, long masterSequence) : Exception(
-    $"This replica is at change {clientSequence} but the master's log ends at {masterSequence}. The replica must be rebuilt from the master.");
+    $"{SyncErrors.ReplicaMustRebuild}: This replica is at change {clientSequence} but the master's log ends at {masterSequence}. The replica must be rebuilt from the master.");
+
+/// <summary>
+/// The client's last change is not the one the master has at that position: the master was restored from an older
+/// backup and has grown past it with other changes, so the numbers line up but the histories do not.
+/// </summary>
+public sealed class ReplicaDivergedFromMasterException(long sequence) : Exception(
+    $"{SyncErrors.ReplicaMustRebuild}: The master's log has a different change at position {sequence} than this replica. The replica must be rebuilt from the master.");
 
 /// <summary>
 /// The durable engine of ADR-0004: field-level versioning with master arbitration, on PostgreSQL.
@@ -87,8 +94,21 @@ public sealed class FieldSyncEngine(MasterDbContext db, IAuditLog auditLog, Time
             }
         }
 
+        // The numbers can line up while the history behind them differs (a restore, then new changes): compare ids.
+        if (since is { Sequence: > 0, AnchorChangeId: { } anchor })
+        {
+            var atCursor = await db.Changes.AsNoTracking()
+                .Where(c => c.EngagementId == engagementId && c.Sequence == since.Sequence)
+                .Select(c => (Guid?)c.ChangeId)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (atCursor is { } held && held != anchor)
+            {
+                throw new ReplicaDivergedFromMasterException(since.Sequence);
+            }
+        }
+
         var page = rows.Take(max).Select(ToEnvelope).ToList();
-        return new PullResult(page, page.Count > 0 ? new SyncCursor(page[^1].Sequence) : since, rows.Count > max);
+        return new PullResult(page, page.Count > 0 ? new SyncCursor(page[^1].Sequence, page[^1].ChangeId) : since, rows.Count > max);
     }
 
     /// <summary>

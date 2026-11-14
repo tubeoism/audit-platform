@@ -171,6 +171,82 @@ public sealed class SyncLoopTests : IAsyncDisposable
         Assert.Empty(await db.ReplicaLog.ToListAsync(Ct));
     }
 
+    [Fact]
+    public async Task The_next_pull_carries_the_id_of_the_last_change_the_replica_holds()
+    {
+        _source.Next = new DirectorySnapshot([Info()], []);
+        var paper = Guid.NewGuid();
+        await using (var unit = await _units.OpenAsync(Ct))
+        {
+            var work = unit.Workspace(Eng, Me);
+            await work.CreatePaperAsync(paper, "AUP-CSH-03", 1, Ct);
+            await work.SetFieldAsync(paper, "exceptions_noted", "0", Ct);
+        }
+
+        await _loop.RunOnceAsync(Ct);
+        await _loop.RunOnceAsync(Ct);
+
+        await using var db = _contexts.CreateDbContext();
+        var last = await db.ReplicaLog.OrderByDescending(r => r.Sequence).FirstAsync(Ct);
+        Assert.Equal(new SyncCursor(0, null), _transport.Cursors[0]);
+        Assert.Equal(new SyncCursor(2, last.ChangeId), _transport.Cursors[^1]);
+    }
+
+    [Fact]
+    public async Task A_restored_master_stops_the_replica_and_a_rebuild_resubmits_the_work_it_lost()
+    {
+        _source.Next = new DirectorySnapshot([Info()], []);
+        var paper = Guid.NewGuid();
+        await using (var unit = await _units.OpenAsync(Ct))
+        {
+            var work = unit.Workspace(Eng, Me);
+            await work.CreatePaperAsync(paper, "AUP-CSH-03", 1, Ct);
+            await work.SetFieldAsync(paper, "exceptions_noted", "0", Ct);
+        }
+
+        await _loop.RunOnceAsync(Ct);
+        await _loop.RunOnceAsync(Ct);
+        await using (var db = _contexts.CreateDbContext())
+        {
+            Assert.Equal((2, 0), (await db.ReplicaLog.CountAsync(Ct), await db.Outbox.CountAsync(Ct)));
+        }
+
+        // The master is restored from a backup older than this laptop's work, and says the replica must be rebuilt.
+        _transport.ForgetLog();
+        _transport.PullError = $"Failed to invoke 'Pull' due to an error on the server. HubException: {SyncErrors.ReplicaMustRebuild}: log differs.";
+        await _loop.RunOnceAsync(Ct);
+
+        Assert.Contains("dựng lại", _loop.Stopped[Eng], StringComparison.Ordinal);
+        Assert.Contains("dựng lại", _loop.Status.Error, StringComparison.Ordinal);
+        var pulls = _transport.Pulls;
+        await _loop.RunOnceAsync(Ct);
+        Assert.Equal(pulls, _transport.Pulls);
+
+        // Rebuilding keeps everything the author did, and works while the master still refuses.
+        var pushed = _transport.Pushed.Count;
+        var rebuilt = await _loop.RebuildAsync(Eng, Ct);
+        Assert.Equal(new ReplicaRebuild(Resubmitted: 2, PendingKept: 0), rebuilt);
+        Assert.Empty(_loop.Stopped);
+        await using (var db = _contexts.CreateDbContext())
+        {
+            Assert.Empty(await db.ReplicaLog.ToListAsync(Ct));
+            Assert.Empty(await db.Documents.ToListAsync(Ct));
+            Assert.Equal(2, await db.Outbox.CountAsync(o => o.State == OutboxState.Pending, Ct));
+            Assert.Equal(0, (await db.SyncState.SingleAsync(Ct)).LastPulledSequence);
+        }
+
+        // The master takes the work again and the replica follows it from the start.
+        _transport.PullError = null;
+        await _loop.RunOnceAsync(Ct);
+        Assert.Equal(pushed + 2, _transport.Pushed.Count);
+        await using (var db = _contexts.CreateDbContext())
+        {
+            Assert.Equal((2, 0), (await db.ReplicaLog.CountAsync(Ct), await db.Outbox.CountAsync(Ct)));
+            var doc = await new LocalReplica(db).GetDocumentAsync(Eng, paper, Ct);
+            Assert.Equal("0", doc.Value("exceptions_noted"));
+        }
+    }
+
     private sealed class Factory(string path) : IDbContextFactory<LocalDbContext>
     {
         public LocalDbContext CreateDbContext() =>
@@ -197,7 +273,15 @@ public sealed class SyncLoopTests : IAsyncDisposable
         public List<ChangeEnvelope> Pushed { get; } = [];
         public Queue<PullResult> Pages { get; } = new();
         public int Pulls { get; private set; }
+        public List<SyncCursor> Cursors { get; } = [];
+
+        /// <summary>When set, every pull fails with this message (the master saying the replica must be rebuilt).</summary>
+        public string? PullError { get; set; }
+
         private readonly List<ChangeEnvelope> _log = [];
+
+        /// <summary>The master was restored from an older backup: it has none of what was pushed.</summary>
+        public void ForgetLog() => _log.Clear();
 
         public event EventHandler<ConnectionState>? StateChanged;
 #pragma warning disable CS0067 // The loop subscribes; these tests never raise it.
@@ -243,6 +327,12 @@ public sealed class SyncLoopTests : IAsyncDisposable
         public Task<PullResult> PullAsync(Guid engagementId, SyncCursor since, int maxChanges, CancellationToken cancellationToken)
         {
             Pulls++;
+            Cursors.Add(since);
+            if (PullError is not null)
+            {
+                throw new InvalidOperationException(PullError);
+            }
+
             if (Pages.Count > 0)
             {
                 return Task.FromResult(Pages.Dequeue());
