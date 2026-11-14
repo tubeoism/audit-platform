@@ -1,5 +1,6 @@
 using System.Globalization;
 using AuditPlatform.Domain.Engagements;
+using AuditPlatform.Master.Archive;
 using AuditPlatform.Master.Data.Entities;
 using AuditPlatform.Master.Engagements;
 using AuditPlatform.Master.Evidence;
@@ -27,6 +28,8 @@ internal static class AdminCli
           engagement create <mã> "<khách hàng>" "<số hợp đồng>" <từ yyyy-mm-dd> <đến yyyy-mm-dd>
           engagement member <mã> <email> <vai trò>   Thêm vai trò: preparer|managerqa|japandesk|engagementmanager
           engagement unmember <mã> <email> <vai trò> Gỡ vai trò
+          engagement package <mã> <tệp.tar>          Đóng gói engagement đã khoá để lưu trữ (chỉ đọc, ghi dưới /srv/audit); in hai digest
+          engagement archived <mã> <package-digest> <tar-sha256> "<nơi lưu>"   Đánh dấu Archived sau khi gói đã nằm an toàn trong audit-archive
           templates import en|vi < tệp.md            Nhập một tệp thủ tục (ia-aup-procedures) từ stdin
           templates list                             Thư viện thủ tục đang dùng
           evidence verify                            Băm lại mọi file bằng chứng; báo file thiếu hoặc bị sửa (sau khôi phục, hoặc định kỳ)
@@ -126,6 +129,33 @@ internal static class AdminCli
                         : changed.Value ? "OK. Đã ghi audit log." : "Không có gì thay đổi.");
                     return changed.Succeeded ? 0 : 1;
                 });
+
+            case ["engagement", "package", var code, var path]:
+            {
+                var packaged = await scope.ServiceProvider.GetRequiredService<ArchivePackager>().BuildAsync(actor, code, path, ct);
+                if (packaged.Error is { } error)
+                {
+                    await output.WriteLineAsync($"LỖI [{error.Code}] {error.Message}");
+                    return 1;
+                }
+
+                var p = packaged.Value!;
+                await output.WriteLineAsync(string.Create(CultureInfo.InvariantCulture,
+                    $"OK. Đã ghi {path} ({p.Bytes / (1024.0 * 1024):0.#} MB): {p.Papers} giấy làm việc, {p.Changes} thay đổi, {p.AuditEntries} dòng audit, {p.EvidenceFiles} file bằng chứng ({p.EvidenceBytes / (1024.0 * 1024):0.#} MB)."));
+                await output.WriteLineAsync($"tar-sha256     {p.TarSha256}");
+                await output.WriteLineAsync($"package-digest {p.PackageDigest}");
+                await output.WriteLineAsync($"lock-digest    {p.LockDigest}");
+                await output.WriteLineAsync("Đã đọc lại tệp vừa ghi và đối chiếu từng file với SHA256SUMS. Tiếp theo: tải lên audit-archive, kiểm tra bản trên R2 có cùng tar-sha256, rồi chạy `engagement archived`.");
+                return 0;
+            }
+
+            case ["engagement", "archived", var code, var packageDigest, var tarSha256, var location]:
+            {
+                var archived = await scope.ServiceProvider.GetRequiredService<EngagementLifecycle>().ArchiveAsync(actor, code, packageDigest, tarSha256, location, ct);
+                await output.WriteLineAsync(archived.Error is { } error ? $"LỖI [{error.Code}] {error.Message}"
+                    : $"OK. Engagement {code} đã chuyển sang Archived; gói {archived.Value!.PackageDigest[..16]}… tại {archived.Value.Location}. Không thể hoàn tác. Đã ghi audit log.");
+                return archived.Succeeded ? 0 : 1;
+            }
 
             case ["templates", "import", var language]:
             {

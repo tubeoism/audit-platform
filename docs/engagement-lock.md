@@ -38,4 +38,4 @@ Refusals on the audit log: `engagement.lock.refused` (preconditions), `engagemen
 - Changes a member made offline and had not yet pushed when the lock happened are refused by the master. They stay on that
   laptop as "bị từ chối" and are never sent again. The manager should ask the team to sync before locking.
 - No e-mail is sent on lock yet (the hub event and the audit log are the record).
-- Packaging the locked engagement into `audit-archive` (status `Archived`) is a separate step.
+- Packaging the locked engagement into `audit-archive` (status `Archived`) is a separate step: see [engagement-archive.md](engagement-archive.md). The package and the status change exist; the upload to the immutable bucket does not yet.
