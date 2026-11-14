@@ -40,6 +40,7 @@ builder.Services.AddScoped<EngagementService>();
 builder.Services.AddScoped<EngagementLifecycle>();
 builder.Services.AddScoped<TemplateService>();
 builder.Services.AddScoped<EvidenceService>();
+builder.Services.AddScoped<EvidenceUploads>();
 builder.Services.AddSingleton<NotificationSignal>();
 builder.Services.AddScoped<NotificationSender>();
 builder.Services.AddHostedService<NotificationDispatcher>();

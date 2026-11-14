@@ -8,9 +8,11 @@ using AuditPlatform.Client.Core.Sync;
 using AuditPlatform.Client.Core.ViewModels;
 using AuditPlatform.Client.Core.WorkingPapers;
 using AuditPlatform.Contracts.Auth;
+using AuditPlatform.Contracts.Evidence;
 using AuditPlatform.Domain.Engagements;
 using AuditPlatform.Master.Auth;
 using AuditPlatform.Master.Tests.Auth;
+using System.Net.Http.Json;
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -922,6 +924,113 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
         }
 
         Assert.Contains(await factory.AuditAsync(), a => a.Action == "evidence.damaged" && a.EntityId == sheet.Hash);
+    }
+
+    [Fact]
+    public async Task A_file_too_large_for_one_request_goes_in_parts_resumes_and_is_checked_against_its_hash()
+    {
+        factory.RequireDatabase();
+        factory.Clock.CatchUpWithRealTime();
+        var an = await factory.EnrolAsync();
+        var reviewer = await factory.EnrolAsync();
+        var outsider = await factory.EnrolAsync();
+        var code = "ENG-" + Guid.NewGuid().ToString("N")[..8];
+        await AdminAsync(null, "engagement", "create", code, "Công ty ABC", "AUP-2026-016", "2026-01-01", "2026-12-31");
+        await AdminAsync(null, "engagement", "member", code, an.Email, "preparer");
+        await AdminAsync(null, "engagement", "member", code, reviewer.Email, "managerqa");
+
+        await using var deskAn = new Desk(factory, an);
+        await using var deskReviewer = new Desk(factory, reviewer);
+        await using var deskOutsider = new Desk(factory, outsider);
+        Assert.Null(await deskAn.StartAsync());
+        Assert.Null(await deskReviewer.StartAsync());
+        Assert.Null(await deskOutsider.StartAsync());
+        var engagement = deskAn.Engagement.EngagementId;
+
+        // A client whose threshold is small, so that 10,000 bytes go in three parts of 4,096 / 4,096 / 1,808.
+        MasterEvidenceTransport Sender(Desk desk) => new(factory.CreateClient(),
+            new ClientOptions { MasterUrl = new Uri("http://localhost/"), DataDirectory = desk.DataDirectory, PartedUploadThreshold = 5000 },
+            () => desk.Session.GetAccessTokenAsync());
+        var content = Enumerable.Range(0, 10_000).Select(i => (byte)(i * 31 % 251)).ToArray();
+        string hash;
+        await using (var ms = new MemoryStream(content))
+        {
+            hash = (await AuditPlatform.Evidence.EvidenceHash.ComputeAsync(ms, null, Ct)).Hash;
+        }
+
+        var staging = Path.Combine(factory.EvidenceRoot, ".staging", "parts", engagement.ToString("N"), hash);
+
+        // ----- The protocol itself: state, a part held, a part of the wrong size, completing too early.
+        using var raw = factory.CreateClient();
+        raw.DefaultRequestHeaders.Authorization = new("Bearer", await deskAn.Session.GetAccessTokenAsync(Ct));
+        var status = await raw.GetFromJsonAsync<EvidenceParts>(EvidenceRoutes.PartsFor(engagement, hash, content.Length), Ct);
+        Assert.Equal((AuthFactory.PartBytes, AuthFactory.MaxPartedEvidenceBytes, 0), (status!.PartBytes, status.MaxBytes, status.Received.Count));
+
+        using (var second = new ByteArrayContent(content, 4096, 4096))
+        {
+            using var stored = await raw.PutAsync(EvidenceRoutes.PartFor(engagement, hash, 2, content.Length), second, Ct);
+            Assert.Equal(System.Net.HttpStatusCode.NoContent, stored.StatusCode);
+        }
+
+        using (var shortPart = new ByteArrayContent(content, 0, 100))
+        {
+            using var refused = await raw.PutAsync(EvidenceRoutes.PartFor(engagement, hash, 1, content.Length), shortPart, Ct);
+            Assert.Equal(System.Net.HttpStatusCode.BadRequest, refused.StatusCode);
+        }
+
+        status = await raw.GetFromJsonAsync<EvidenceParts>(EvidenceRoutes.PartsFor(engagement, hash, content.Length), Ct);
+        Assert.Equal([2], status!.Received);
+        using (var early = await raw.PostAsync(EvidenceRoutes.CompleteFor(engagement, hash, content.Length, "big.bin"), null, Ct))
+        {
+            Assert.Equal(System.Net.HttpStatusCode.Conflict, early.StatusCode);
+        }
+
+        // ----- The client resumes from what the master holds and completes; the file reads back whole.
+        var sender = Sender(deskAn);
+        await using (var whole = new MemoryStream(content))
+        {
+            Assert.Equal(EvidenceSend.Stored, (await sender.SendAsync(engagement, hash, "big.bin", whole, Ct)).Outcome);
+        }
+
+        var listed = Assert.Single(await sender.ListAsync(engagement, Ct) ?? []);
+        Assert.Equal((hash, 10_000L, "big.bin"), (listed.Hash, listed.SizeBytes, listed.FileName));
+        await using (var back = new MemoryStream())
+        {
+            Assert.True(await sender.FetchAsync(engagement, hash, back, Ct));
+            Assert.Equal(content, back.ToArray());
+        }
+
+        Assert.False(Directory.Exists(staging), "the parts are removed once the file is stored");
+        Assert.Single(await factory.AuditAsync(), a => a.Action == "evidence.received" && a.EntityId == hash);
+
+        // ----- Content that is not what its hash says is refused as a whole, and the parts do not linger.
+        var wrong = new string('0', 64);
+        await using (var other = new MemoryStream(content[..6000]))
+        {
+            var result = await sender.SendAsync(engagement, wrong, "bad.bin", other, Ct);
+            Assert.Equal(EvidenceSend.Refused, result.Outcome);
+            Assert.Contains("hashes to", result.Reason, StringComparison.Ordinal);
+        }
+
+        Assert.False(Directory.Exists(Path.Combine(factory.EvidenceRoot, ".staging", "parts", engagement.ToString("N"), wrong)));
+
+        // ----- Over the limit for parts; a reviewer (reads only); a stranger.
+        await using (var huge = new MemoryStream(new byte[AuthFactory.MaxPartedEvidenceBytes + 1]))
+        {
+            Assert.Equal(EvidenceSend.Refused, (await sender.SendAsync(engagement, new string('1', 64), "huge.bin", huge, Ct)).Outcome);
+        }
+
+        await using (var forReviewer = new MemoryStream(content))
+        {
+            Assert.Equal(EvidenceSend.Refused, (await Sender(deskReviewer).SendAsync(engagement, hash, "big.bin", forReviewer, Ct)).Outcome);
+        }
+
+        await using (var forStranger = new MemoryStream(content))
+        {
+            Assert.Equal(EvidenceSend.Refused, (await Sender(deskOutsider).SendAsync(engagement, hash, "big.bin", forStranger, Ct)).Outcome);
+        }
+
+        Assert.Equal(1, (await factory.AuditAsync()).Count(a => a.Action == "evidence.received" && a.EngagementId == engagement));
     }
 
     private async Task<(int Exit, string Output)> RunAdminAsync(params string[] args)
