@@ -114,7 +114,9 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
             }))),
             Json("evidence/index.json", new
             {
-                files = hashes.Select(h => new { hash = h, sizeBytes = objects[h].SizeBytes, path = $"evidence/files/{h}" }),
+                // The name of each file is the BLAKE3-256 of its content, the address every record in the system uses.
+                // SHA256SUMS holds the SHA-256, which any machine can check.
+                files = hashes.Select(h => new { blake3 = h, sizeBytes = objects[h].SizeBytes, path = $"evidence/files/{h}" }),
                 receipts = intake.Select(i => new
                 {
                     i.Hash, i.OriginalFileName, i.MediaType, i.ReceivedAt, i.ReceivedBy, receivedByName = users.GetValueOrDefault(i.ReceivedBy)?.DisplayName, i.Source,
@@ -134,7 +136,7 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
         foreach (var hash in hashes)
         {
             var captured = hash;
-            entries.Add(ArchiveEntry.FromStream($"evidence/files/{hash}", hash, ct => store.OpenVerifiedAsync(captured, ct)));
+            entries.Add(ArchiveEntry.FromStream($"evidence/files/{hash}", ct => store.OpenVerifiedAsync(captured, ct)));
         }
 
         ArchiveTarResult written;
@@ -294,7 +296,7 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
         changes.jsonl        Nhật ký thay đổi theo thứ tự nhận (payload là base64 của JSON). / The change log in order of receipt (payload is base64 of JSON).
         audit-log.jsonl      Các dòng audit log về engagement này, kèm mã băm chuỗi. / Audit-log entries about this engagement, with their hash chain.
         evidence/index.json  Biên nhận từng file bằng chứng. / Receipt of every evidence file.
-        evidence/files/<sha256>   File bằng chứng; tên file là SHA-256 của nội dung. / Evidence files, named by the SHA-256 of their content.
+        evidence/files/<blake3>   File bằng chứng; tên file là BLAKE3-256 của nội dung (địa chỉ dùng trong mọi bản ghi). / Evidence files, named by the BLAKE3-256 of their content (the address every record uses).
         SHA256SUMS           Mã băm của mọi file khác trong gói. / The SHA-256 of every other file.
         """;
 

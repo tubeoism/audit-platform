@@ -6,14 +6,15 @@ namespace AuditPlatform.Master.Archive;
 
 /// <summary>
 /// One file of the archive: either bytes held in memory, or an evidence file that is opened only when it is written,
-/// so a multi-gigabyte engagement is never held in memory. <see cref="Sha256"/> is what <c>SHA256SUMS</c> lists it
-/// under; for evidence that is its address, and <see cref="ArchiveTar.VerifyAsync"/> checks it against what was written.
+/// so a multi-gigabyte engagement is never held in memory. A stream must be seekable: it is read once to take its
+/// SHA-256 (the evidence store's own address is BLAKE3, which <c>sha256sum</c> cannot check) and once more to be written.
+/// <see cref="ArchiveTar.VerifyAsync"/> then checks what really went into the file against the list.
 /// </summary>
-internal sealed record ArchiveEntry(string Path, byte[]? Bytes, Func<CancellationToken, ValueTask<Stream>>? Open, string? Sha256)
+internal sealed record ArchiveEntry(string Path, byte[]? Bytes, Func<CancellationToken, ValueTask<Stream>>? Open)
 {
-    public static ArchiveEntry FromBytes(string path, byte[] bytes) => new(path, bytes, null, null);
+    public static ArchiveEntry FromBytes(string path, byte[] bytes) => new(path, bytes, null);
 
-    public static ArchiveEntry FromStream(string path, string sha256, Func<CancellationToken, ValueTask<Stream>> open) => new(path, null, open, sha256);
+    public static ArchiveEntry FromStream(string path, Func<CancellationToken, ValueTask<Stream>> open) => new(path, null, open);
 }
 
 /// <param name="Sha256Sums">Text of the <c>SHA256SUMS</c> file at the end of the archive.</param>
@@ -71,8 +72,14 @@ internal static class ArchiveTar
                 }
                 else
                 {
-                    sums.Add((entry.Sha256!.ToLowerInvariant(), entry.Path));
                     await using var source = await entry.Open!(cancellationToken);
+                    if (!source.CanSeek)
+                    {
+                        throw new ArgumentException($"{entry.Path}: the stream must be seekable.", nameof(entries));
+                    }
+
+                    sums.Add((await Sha256Async(source, cancellationToken), entry.Path));
+                    source.Position = 0;
                     await tar.WriteEntryAsync(NewEntry($"{root}/{entry.Path}", source, modified), cancellationToken);
                 }
             }
@@ -163,6 +170,19 @@ internal static class ArchiveTar
         }
 
         return new ArchiveVerification(reading.Sha256Hex(), reading.Count, actual.Count + 1);
+    }
+
+    private static async Task<string> Sha256Async(Stream source, CancellationToken cancellationToken)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[81920];
+        int read;
+        while ((read = await source.ReadAsync(buffer, cancellationToken)) > 0)
+        {
+            hash.AppendData(buffer, 0, read);
+        }
+
+        return Convert.ToHexStringLower(hash.GetHashAndReset());
     }
 
     private static string SumsText(string root, IEnumerable<(string Hash, string Path)> sums) =>
