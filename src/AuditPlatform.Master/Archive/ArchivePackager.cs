@@ -148,7 +148,8 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
             {
                 written = await ArchiveTar.WriteAsync(file, root, entries, engagement.LockedAt ?? now, cancellationToken);
 
-                // To disk, not only to the cache: the package is about to be vouched for, and read back below.
+                // Durability: the package is about to be vouched for and renamed into place. The read-back below goes through the
+                // operating system's cache like any read; the check against the bucket is what proves the disk-to-R2 path.
                 file.Flush(flushToDisk: true);
                 file.Position = 0;
                 checkedFile = await ArchiveTar.VerifyAsync(file, cancellationToken);
@@ -157,8 +158,10 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
             File.Move(part, path);
             finished = true;
         }
+        // What the write and the read-back can really throw: a failed check, a store that no longer matches its hash, the file
+        // system, a damaged tar. A programming error is not turned into a "failed package": it surfaces with its stack trace.
         catch (Exception e) when (e is ArchiveIntegrityException or EvidenceIntegrityException or IOException or UnauthorizedAccessException
-            or InvalidDataException or ArgumentException or NotSupportedException or JsonException)
+            or InvalidDataException)
         {
             await WriteAuditAsync(actor, "engagement.archive.refused", engagement, new { failed = e.Message }, cancellationToken);
             return new AuthFailure("archive_failed", "Ghi gói lưu trữ không thành công: " + e.Message);
@@ -169,7 +172,7 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
             // behind to block the next run.
             if (!finished)
             {
-                File.Delete(part);
+                TryDelete(part);
             }
         }
 
@@ -182,12 +185,24 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
         catch
         {
             // A package without its record cannot be archived, and a file left behind would block the next run:
-            // the package can be built again, so remove it.
-            File.Delete(path);
+            // the package can be built again, so remove it. The error that matters is the audit one, not a failed delete.
+            TryDelete(path);
             throw;
         }
 
         return info;
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // Best effort: the caller is already handling a failure, and this must not replace it.
+        }
     }
 
     /// <summary>Everything that must be true before a package is worth sealing. All problems are reported at once.</summary>

@@ -172,6 +172,32 @@ public sealed class ArchiveFlowTests(AuthFactory factory) : IClassFixture<AuthFa
         Assert.Equal(EngagementStatus.Locked, (await factory.ScopeAsync(sp => sp.GetRequiredService<MasterDbContext>().Engagements.AsNoTracking().SingleAsync(e => e.Id == seed.Id, Ct))).Status);
     }
 
+    private sealed class FailingAuditLog : IAuditLog
+    {
+        public ValueTask<AuditEntry> AppendAsync(AuditEvent auditEvent, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("The audit log is down.");
+
+        public ValueTask<IReadOnlyList<AuditEntry>> AppendManyAsync(IReadOnlyList<AuditEvent> auditEvents, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("The audit log is down.");
+    }
+
+    [Fact]
+    public async Task A_package_whose_audit_entry_cannot_be_written_is_removed_and_the_real_error_surfaces()
+    {
+        var seed = await SeedAsync();
+        var path = NewPath();
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() => factory.ScopeAsync(sp =>
+            new ArchivePackager(sp.GetRequiredService<MasterDbContext>(), sp.GetRequiredService<IEvidenceStore>(), new FailingAuditLog(), factory.Clock)
+                .BuildAsync(Console, seed.Code, path, Ct)));
+
+        // A package without its record cannot be archived and would block the next run, so no file is left behind.
+        Assert.Equal("The audit log is down.", thrown.Message);
+        Assert.False(File.Exists(path));
+        Assert.False(File.Exists(path + ".part"));
+        Assert.True((await PackageAsync(seed.Code, path)).Succeeded);
+    }
+
     [Fact]
     public async Task Only_a_locked_engagement_with_a_free_output_path_is_packaged()
     {
