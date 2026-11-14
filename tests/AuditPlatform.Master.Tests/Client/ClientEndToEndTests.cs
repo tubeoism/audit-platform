@@ -134,6 +134,7 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
             return path;
         }
 
+        public string DataDirectory => _directory;
         public TestUser User { get; }
         public AuthSession Session { get; }
         public SignalRSyncTransport Transport { get; }
@@ -635,6 +636,111 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
         var trail = (await factory.AuditAsync()).Where(a => a.ActorUserId == lead.Id).Select(a => a.Action).ToList();
         Assert.Equal(3, trail.Count(a => a == "engagement.status.changed"));
         Assert.Single(trail, a => a == "engagement.locked");
+    }
+
+    [Fact]
+    public async Task A_replica_that_cannot_follow_the_master_stops_and_is_rebuilt_from_the_master_without_losing_unsent_work()
+    {
+        factory.RequireDatabase();
+        factory.Clock.CatchUpWithRealTime();
+        var an = await factory.EnrolAsync();
+        var binh = await factory.EnrolAsync();
+        var code = "ENG-" + Guid.NewGuid().ToString("N")[..8];
+        await AdminAsync(null, "engagement", "create", code, "Công ty ABC", "AUP-2026-018", "2026-01-01", "2026-12-31");
+        await AdminAsync(null, "engagement", "member", code, an.Email, "preparer");
+        await AdminAsync(null, "engagement", "member", code, binh.Email, "preparer");
+        await AdminAsync(CashArea[..CashArea.IndexOf("### 1.", StringComparison.Ordinal)] + """
+            ### 9. AUP-CSH-93: Payroll Cash
+
+            - **Procedure:** Agree cash payments of payroll to the payroll register.
+            - **Audit Content:**
+                - Select a sample of payments.
+            - **Evidence to Check:**
+                - Payroll register.
+            """, "templates", "import", "en");
+
+        await using var deskAn = new Desk(factory, an);
+        await using var deskBinh = new Desk(factory, binh);
+        Assert.Null(await deskAn.StartAsync());
+        Assert.Null(await deskBinh.StartAsync());
+
+        deskAn.Engagement.SelectedTemplate = deskAn.Engagement.AreaTemplates.Single(t => t.Template.Code == "AUP-CSH-93");
+        await deskAn.Engagement.CreatePaperCommand.ExecuteAsync(null);
+        await deskAn.TypeAndLeaveAsync(WorkingPaperLayout.Exceptions, "0");
+        await deskAn.SyncAsync();
+        await deskBinh.SyncAsync();
+        deskBinh.Engagement.SelectedPaper = Assert.Single(deskBinh.Engagement.Papers);
+        await deskBinh.Paper.ReloadAsync(Ct);
+        Assert.Null(deskAn.Engagement.ReplicaProblem);
+
+        // ----- A hole in An's copy of the log (a damaged file, say): the next change from the master no longer follows it.
+        await using (var db = deskAn.OpenDb())
+        {
+            var last = await db.ReplicaLog.MaxAsync(r => r.Sequence, Ct);
+            Assert.Equal(1, await db.ReplicaLog.Where(r => r.Sequence == last).ExecuteDeleteAsync(Ct));
+        }
+
+        await deskBinh.TypeAndLeaveAsync(WorkingPaperLayout.Exceptions, "4");
+        await deskBinh.SyncAsync();
+        await deskAn.SyncAsync();
+        // The laptop stops following this engagement instead of drifting, says why, and offers the rebuild.
+        Assert.NotNull(deskAn.Engagement.ReplicaProblem);
+        Assert.Contains("đã dừng đồng bộ", deskAn.Engagement.ReplicaProblem, StringComparison.Ordinal);
+        Assert.NotNull(deskAn.Loop.Status.Error);
+        Assert.Single(deskAn.Loop.Stopped);
+
+        // Work done meanwhile is kept in the outbox and is not lost by the rebuild.
+        deskAn.Engagement.SelectedPaper = Assert.Single(deskAn.Engagement.Papers);
+        await deskAn.Paper.ReloadAsync(Ct);
+        await deskAn.TypeAndLeaveAsync(WorkingPaperLayout.StepKey(1), "Đã đối chiếu 25 khoản chi lương bằng tiền mặt.");
+        await deskAn.SyncAsync();
+        Assert.NotNull(deskAn.Engagement.ReplicaProblem);
+
+        await deskAn.Engagement.RebuildCommand.ExecuteAsync(null);
+        Assert.Contains("Đã dựng lại từ máy chủ", deskAn.Engagement.RebuildMessage, StringComparison.Ordinal);
+        var backups = System.IO.Directory.GetFiles(Path.Combine(deskAn.DataDirectory, "backups"), "replica-*.db");
+        var backup = Assert.Single(backups);
+        Assert.Contains(backup, deskAn.Engagement.RebuildMessage, StringComparison.Ordinal);
+        await using (var copy = new SqliteConnection($"Data Source={backup};Mode=ReadOnly;Pooling=False"))
+        {
+            await copy.OpenAsync(Ct);
+            using var count = copy.CreateCommand();
+            count.CommandText = "SELECT COUNT(*) FROM replica_log";
+            Assert.True(Convert.ToInt64(await count.ExecuteScalarAsync(Ct), System.Globalization.CultureInfo.InvariantCulture) > 0);
+        }
+
+        await deskAn.SyncAsync();
+        await deskAn.SyncAsync();
+        Assert.Null(deskAn.Engagement.ReplicaProblem);
+        Assert.Empty(deskAn.Loop.Stopped);
+        Assert.Null(deskAn.Loop.Status.Error);
+        Assert.Equal(0, deskAn.Loop.Status.Pending);
+        // The copy equals the master's again, and the unsent text got through.
+        await using (var unit = await deskAn.OpenUnitAsync())
+        {
+            var paper = deskAn.Paper.DocumentId;
+            var confirmed = await unit.Replica.GetDocumentAsync(deskAn.Engagement.EngagementId, paper, Ct);
+            var replayed = await unit.Replica.ReplayDocumentAsync(deskAn.Engagement.EngagementId, paper, Ct);
+            Assert.Equal(replayed.ToJson(), confirmed.ToJson());
+            Assert.Equal("4", confirmed.Value(WorkingPaperLayout.Exceptions));
+        }
+
+        await deskBinh.SyncAsync();
+        Assert.Equal("Đã đối chiếu 25 khoản chi lương bằng tiền mặt.", deskBinh.Field(WorkingPaperLayout.StepKey(1)).Text);
+
+        // ----- The master restored from an older backup: this laptop is ahead of it. It stops, and warns before a rebuild.
+        await using (var db = deskAn.OpenDb())
+        {
+            await db.SyncState.ExecuteUpdateAsync(s => s.SetProperty(x => x.LastPulledSequence, 9999L), Ct);
+        }
+
+        await deskAn.SyncAsync();
+        Assert.Contains("cũ hơn", deskAn.Engagement.ReplicaProblem, StringComparison.Ordinal);
+        Assert.Contains("Báo Admin", deskAn.Engagement.ReplicaProblem, StringComparison.Ordinal);
+        await deskAn.Engagement.RebuildCommand.ExecuteAsync(null);
+        await deskAn.SyncAsync();
+        Assert.Null(deskAn.Engagement.ReplicaProblem);
+        Assert.Equal(2, System.IO.Directory.GetFiles(Path.Combine(deskAn.DataDirectory, "backups"), "replica-*.db").Length);
     }
 
     [Fact]

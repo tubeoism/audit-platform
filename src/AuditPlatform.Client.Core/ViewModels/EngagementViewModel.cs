@@ -116,6 +116,13 @@ public sealed partial class EngagementViewModel : ObservableObject
     [ObservableProperty]
     private string? _lifecycleMessage;
 
+    /// <summary>Why this laptop stopped following the master for this engagement; null when it follows normally.</summary>
+    [ObservableProperty]
+    private string? _replicaProblem;
+
+    [ObservableProperty]
+    private string? _rebuildMessage;
+
     private string? _lockDigest;
     private EngagementStatus _status;
     private bool _isManager;
@@ -137,6 +144,7 @@ public sealed partial class EngagementViewModel : ObservableObject
         Heading = $"{engagement.Code} · {engagement.ClientName}";
         Detail = $"{engagement.Status}{(engagement.IsReadOnly ? " · đã khoá, chỉ xem" : "")} · vai trò của bạn: {(roles.Count == 0 ? "chưa rõ" : string.Join(", ", roles.Order()))}";
         CanCreate = !engagement.IsReadOnly && FieldPolicy.CanEdit(roles);
+        ReplicaProblem = _loop.Stopped.GetValueOrDefault(EngagementId);
         _status = engagement.Status;
         _isManager = !engagement.IsReadOnly && roles.Contains(EngagementRole.EngagementManager);
         ShowLifecycle = _isManager;
@@ -183,7 +191,8 @@ public sealed partial class EngagementViewModel : ObservableObject
             }.OfType<string>()))).ToList();
         if (!Papers.SequenceEqual(papers))
         {
-            var keep = SelectedPaper?.Id;
+            // The list can be empty for a moment (a rebuild from the master); the paper the user had open comes back with it.
+            var keep = SelectedPaper?.Id ?? _wantedPaper;
             Papers.Clear();
             papers.ForEach(Papers.Add);
             _keepPaper = true;
@@ -210,8 +219,15 @@ public sealed partial class EngagementViewModel : ObservableObject
         SelectedTemplate = AreaTemplates.FirstOrDefault();
     }
 
+    private Guid? _wantedPaper;
+
     partial void OnSelectedPaperChanged(PaperItem? value)
     {
+        if (value is not null)
+        {
+            _wantedPaper = value.Id;
+        }
+
         if (_keepPaper && value?.Id == Paper?.DocumentId)
         {
             return;
@@ -353,6 +369,27 @@ public sealed partial class EngagementViewModel : ObservableObject
         LockUnderstood = false;
         _loop.Poke();
         LifecycleMessage = "Engagement đã khoá. Từ giờ chỉ xem.";
+        await ReloadAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Rebuilds this laptop's copy of the engagement from the master. Unsent edits stay; the whole local database is
+    /// copied aside first.
+    /// </summary>
+    [RelayCommand]
+    private async Task RebuildAsync(CancellationToken cancellationToken)
+    {
+        RebuildMessage = null;
+        try
+        {
+            var copy = await _loop.RebuildReplicaAsync(EngagementId, cancellationToken);
+            RebuildMessage = $"Đã dựng lại từ máy chủ. Bản sao dữ liệu cũ của máy này: {copy}";
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.Sqlite.SqliteException or IOException or UnauthorizedAccessException)
+        {
+            RebuildMessage = $"Không dựng lại được: {ex.Message}";
+        }
+
         await ReloadAsync(cancellationToken);
     }
 }

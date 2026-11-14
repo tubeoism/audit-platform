@@ -55,7 +55,7 @@ internal sealed class SyncHub(SyncCoordinator coordinator, IOptions<MasterOption
         }
         catch (ReplicaAheadOfMasterException ex)
         {
-            throw new HubException(ex.Message);
+            throw new HubException($"{SyncErrorCodes.ReplicaAhead}: {ex.Message}");
         }
     }
 

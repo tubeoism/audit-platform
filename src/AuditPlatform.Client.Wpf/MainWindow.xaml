@@ -64,6 +64,18 @@
           <TextBlock DockPanel.Dock="Top" Text="{Binding Heading}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
           <TextBlock DockPanel.Dock="Top" Text="{Binding Detail}" Style="{StaticResource Muted}" Margin="0,2,0,0" />
 
+          <!-- The copy on this laptop cannot follow the master: sync of this engagement is stopped until it is rebuilt. -->
+          <Border DockPanel.Dock="Top" Background="#FDECEC" BorderBrush="#E0A3A3" BorderThickness="1" Padding="10,8" Margin="0,8,0,0"
+                  Visibility="{Binding ReplicaProblem, Converter={StaticResource Present}}">
+            <StackPanel>
+              <TextBlock Text="Đồng bộ engagement này đã dừng" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding ReplicaProblem}" TextWrapping="Wrap" Margin="0,2,0,6" />
+              <Button Content="Dựng lại từ máy chủ" Command="{Binding RebuildCommand}" HorizontalAlignment="Left" />
+            </StackPanel>
+          </Border>
+          <TextBlock DockPanel.Dock="Top" Text="{Binding RebuildMessage}" TextWrapping="Wrap" Margin="0,6,0,0"
+                     Visibility="{Binding RebuildMessage, Converter={StaticResource Present}}" />
+
           <!-- Phases and the final lock: the engagement manager only, and only online. -->
           <StackPanel DockPanel.Dock="Top" Margin="0,8,0,8" Visibility="{Binding ShowLifecycle, Converter={StaticResource Present}}">
             <TextBlock Text="Giai đoạn engagement" Style="{StaticResource SectionTitle}" />

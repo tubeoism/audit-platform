@@ -46,6 +46,13 @@ public sealed record PushResult(IReadOnlyList<ChangeResult> Results, SyncCursor 
 
 public sealed record PullResult(IReadOnlyList<ChangeEnvelope> Changes, SyncCursor Cursor, bool HasMore);
 
+/// <summary>Stable prefixes of the messages the hub puts into a <c>HubException</c>, so a client can tell them apart.</summary>
+public static class SyncErrorCodes
+{
+    /// <summary>The client's cursor is beyond the end of the master's log (for example after the master was restored from a backup).</summary>
+    public const string ReplicaAhead = "replica_ahead";
+}
+
 /// <summary>HTTP routes of the master's sync API that are not hub methods.</summary>
 public static class SyncRoutes
 {
