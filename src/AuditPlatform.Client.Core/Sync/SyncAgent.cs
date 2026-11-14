@@ -47,7 +47,8 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
 
     /// <summary>
     /// Pushes pending changes for one engagement in the order they were made. Returns the number of changes the
-    /// master accepted or already had. Safe to repeat: the master answers a redelivered change as it did the first time.
+    /// master accepted or already had; they leave the outbox when the pull applies them to the replica. Safe to repeat:
+    /// the master answers a redelivered change as it did the first time.
     /// </summary>
     public async Task<int> PushPendingAsync(Guid engagementId, CancellationToken cancellationToken, IReadOnlyCollection<long>? held = null)
     {
@@ -58,10 +59,12 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
         }
 
         var delivered = 0;
+        var sent = new HashSet<long>();
         while (true)
         {
             var batch = await db.Outbox
-                .Where(o => o.EngagementId == engagementId && o.State == OutboxState.Pending && !held.Contains(o.LocalSequence))
+                .Where(o => o.EngagementId == engagementId && o.State == OutboxState.Pending && !held.Contains(o.LocalSequence)
+                    && !sent.Contains(o.LocalSequence))
                 .OrderBy(o => o.LocalSequence)
                 .Take(PushBatchSize)
                 .ToListAsync(cancellationToken);
@@ -86,7 +89,11 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
                 {
                     case ChangeOutcome.Accepted:
                     case ChangeOutcome.Duplicate:
-                        db.Outbox.Remove(row);
+                        // The row stays until the pull brings the change back into the replica, which settles it
+                        // (LocalReplica.ApplyAsync). Removing it here would leave a gap in which the change is in
+                        // neither the outbox nor the replica, and a form reloading then would see the work vanish.
+                        // If the pull is lost, the next round delivers it again and the master answers Duplicate.
+                        sent.Add(row.LocalSequence);
                         delivered++;
                         break;
                     case ChangeOutcome.Conflict:

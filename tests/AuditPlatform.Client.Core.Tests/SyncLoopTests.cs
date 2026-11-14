@@ -197,6 +197,7 @@ public sealed class SyncLoopTests : IAsyncDisposable
         public List<ChangeEnvelope> Pushed { get; } = [];
         public Queue<PullResult> Pages { get; } = new();
         public int Pulls { get; private set; }
+        private readonly List<ChangeEnvelope> _log = [];
 
         public event EventHandler<ConnectionState>? StateChanged;
 #pragma warning disable CS0067 // The loop subscribes; these tests never raise it.
@@ -235,13 +236,21 @@ public sealed class SyncLoopTests : IAsyncDisposable
         public Task<PushResult> PushAsync(Guid engagementId, IReadOnlyList<ChangeEnvelope> changes, CancellationToken cancellationToken)
         {
             Pushed.AddRange(changes);
+            _log.AddRange(changes.Select(c => c with { Sequence = _log.Count + 1, ReceivedAt = DateTimeOffset.UnixEpoch }));
             return Task.FromResult(new PushResult([.. changes.Select(c => new ChangeResult(c.ChangeId, ChangeOutcome.Accepted))], SyncCursor.Start));
         }
 
         public Task<PullResult> PullAsync(Guid engagementId, SyncCursor since, int maxChanges, CancellationToken cancellationToken)
         {
             Pulls++;
-            return Task.FromResult(Pages.Count > 0 ? Pages.Dequeue() : new PullResult([], since, false));
+            if (Pages.Count > 0)
+            {
+                return Task.FromResult(Pages.Dequeue());
+            }
+
+            // Like the master: what was pushed comes back in the log.
+            var page = _log.Where(c => c.Sequence > since.Sequence).Take(maxChanges).ToList();
+            return Task.FromResult(new PullResult(page, page.Count > 0 ? new SyncCursor(page[^1].Sequence) : since, false));
         }
     }
 }

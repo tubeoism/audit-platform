@@ -298,12 +298,13 @@ public sealed class LocalEvidenceTests : IAsyncDisposable
         }
     }
 
-    /// <summary>The sync connection: always online, takes every change, hands out the pages a test queued.</summary>
+    /// <summary>The sync connection: always online, takes every change into a log like the master's and hands it back on pull, or the pages a test queued.</summary>
     private sealed class Line(List<string> wire) : ISyncTransport
     {
         public ConnectionState State { get; private set; }
         public List<string> PushedOps { get; } = [];
         public Queue<PullResult> Pages { get; } = new();
+        private readonly List<ChangeEnvelope> _log = [];
 
         public event EventHandler<ConnectionState>? StateChanged;
         public event EventHandler<Guid>? ChangesAvailable { add { } remove { } }
@@ -325,12 +326,21 @@ public sealed class LocalEvidenceTests : IAsyncDisposable
                 var name = FieldPayload.Decode(change.Payload).Name;
                 PushedOps.Add(name);
                 wire.Add("push " + name);
+                _log.Add(change with { Sequence = _log.Count + 1, ReceivedAt = DateTimeOffset.UnixEpoch });
             }
 
             return Task.FromResult(new PushResult([.. changes.Select(c => new ChangeResult(c.ChangeId, ChangeOutcome.Accepted))], SyncCursor.Start));
         }
 
-        public Task<PullResult> PullAsync(Guid engagementId, SyncCursor since, int maxChanges, CancellationToken cancellationToken) =>
-            Task.FromResult(Pages.Count > 0 ? Pages.Dequeue() : new PullResult([], since, false));
+        public Task<PullResult> PullAsync(Guid engagementId, SyncCursor since, int maxChanges, CancellationToken cancellationToken)
+        {
+            if (Pages.Count > 0)
+            {
+                return Task.FromResult(Pages.Dequeue());
+            }
+
+            var page = _log.Where(c => c.Sequence > since.Sequence).Take(maxChanges).ToList();
+            return Task.FromResult(new PullResult(page, page.Count > 0 ? new SyncCursor(page[^1].Sequence) : since, false));
+        }
     }
 }

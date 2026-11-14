@@ -70,11 +70,15 @@ public sealed class SyncAgentTests : IDisposable
         Assert.Equal(2, delivered);
         Assert.Equal([first.ChangeId, second.ChangeId, conflicting.ChangeId, refused.ChangeId], _transport.Pushed.Select(c => c.ChangeId));
         var remaining = await _db.Outbox.OrderBy(o => o.LocalSequence).ToListAsync(ct);
-        Assert.Equal([(conflicting.ChangeId, OutboxState.Conflict), (refused.ChangeId, OutboxState.Rejected)], remaining.Select(r => (r.ChangeId, r.State)));
+        // Accepted changes stay (pending) until the pull brings them into the replica; flagged and refused ones are kept with their state.
+        Assert.Equal(
+            [(first.ChangeId, OutboxState.Pending), (second.ChangeId, OutboxState.Pending),
+                (conflicting.ChangeId, OutboxState.Conflict), (refused.ChangeId, OutboxState.Rejected)],
+            remaining.Select(r => (r.ChangeId, r.State)));
 
-        // Flagged and refused changes are kept for the author but never sent again.
-        Assert.Equal(0, await _agent.PushPendingAsync(Eng, ct));
-        Assert.Equal(4, _transport.Pushed.Count);
+        // Flagged and refused changes are never sent again; accepted ones that have not come back yet are redelivered (the master answers Duplicate).
+        Assert.Equal(2, await _agent.PushPendingAsync(Eng, ct));
+        Assert.Equal([first.ChangeId, second.ChangeId], _transport.Pushed.Skip(4).Select(c => c.ChangeId));
     }
 
     [Fact]
