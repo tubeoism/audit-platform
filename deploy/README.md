@@ -66,6 +66,7 @@ Until `--init` has run, the new release starts normally but answers 503 on every
 - Accounts: `sudo audit-admin list`; a lost phone with no recovery codes left: `sudo audit-admin reset-mfa <email>`; a lost laptop: `sudo audit-admin devices <email>` then `sudo audit-admin revoke <email> <installation-id>`; a leaver: `sudo audit-admin disable <email>`. If mail delivery fails, add `--show-link` and pass the link to the user over a trusted channel.
 
 - Merge to `main`; when CI passes, approve the deploy in Actions.
+- Helper scripts: CD ships only the application. The scripts in `/usr/local/sbin` come from `bootstrap-vm.sh`, `backup/backup-setup.sh` and `evidence/evidence-setup.sh`, so after a PR that changes one of them, re-run the matching setup script on the VM (they are idempotent). The last step of every deploy runs `master/check-vm-drift.sh` (read-only, sha256) and shows a warning in the run summary for any script that is missing or differs. It was not made to install scripts itself, because that would let the `deploy` key put code on the VM that runs as root.
 - Roll back: `ssh deploy@<vm> sudo /usr/local/sbin/audit-activate-release --rollback`
 - Logs: `journalctl -u audit-master -f`, `/var/log/caddy/audit-master.log`
 
