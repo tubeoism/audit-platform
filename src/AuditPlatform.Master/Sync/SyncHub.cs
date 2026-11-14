@@ -57,6 +57,10 @@ internal sealed class SyncHub(SyncCoordinator coordinator, IOptions<MasterOption
         {
             throw new HubException($"{SyncErrorCodes.ReplicaAhead}: {ex.Message}");
         }
+        catch (ReplicaDivergedFromMasterException ex)
+        {
+            throw new HubException($"{SyncErrorCodes.ReplicaDiverged}: {ex.Message}");
+        }
     }
 
     private static async Task Guard(Func<Task> action) =>

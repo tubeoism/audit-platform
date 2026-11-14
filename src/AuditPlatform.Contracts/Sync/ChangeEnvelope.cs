@@ -27,7 +27,13 @@ public sealed record ChangeEnvelope(
     DateTimeOffset? ReceivedAt = null);
 
 /// <summary>Monotonic position in the master's per-engagement change sequence.</summary>
-public readonly record struct SyncCursor(long Sequence)
+/// <param name="Sequence">The last change the caller has.</param>
+/// <param name="AnchorChangeId">
+/// The id of that change, as the caller holds it. The master checks that its own log has the same change at that
+/// position: after a restore from an older backup the sequence numbers still line up while the history behind them is
+/// different, and only the id shows it. Null (an older client, or the start of the log) skips the check.
+/// </param>
+public readonly record struct SyncCursor(long Sequence, Guid? AnchorChangeId = null)
 {
     public static SyncCursor Start => new(0);
 }
@@ -51,6 +57,12 @@ public static class SyncErrorCodes
 {
     /// <summary>The client's cursor is beyond the end of the master's log (for example after the master was restored from a backup).</summary>
     public const string ReplicaAhead = "replica_ahead";
+
+    /// <summary>
+    /// The master has a different change than the client at the client's last position: the master was restored from an
+    /// older backup and has grown past it with other changes, so the sequence numbers line up but the histories do not.
+    /// </summary>
+    public const string ReplicaDiverged = "replica_diverged";
 }
 
 /// <summary>HTTP routes of the master's sync API that are not hub methods.</summary>

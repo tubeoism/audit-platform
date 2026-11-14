@@ -171,6 +171,21 @@ public sealed class SyncLoopTests : IAsyncDisposable
         Assert.Empty(await db.ReplicaLog.ToListAsync(Ct));
     }
 
+    [Fact]
+    public async Task A_master_with_other_changes_at_the_same_positions_stops_the_engagement_and_says_to_tell_the_admin()
+    {
+        _source.Next = new DirectorySnapshot([Info()], []);
+        _transport.HubError = $"{SyncErrorCodes.ReplicaDiverged}: The master's log has a different change at position 3.";
+
+        await _loop.RunOnceAsync(Ct);
+        var pulls = _transport.Pulls;
+        await _loop.RunOnceAsync(Ct);
+
+        Assert.Contains("Lịch sử thay đổi trên máy chủ khác", _loop.Stopped[Eng], StringComparison.Ordinal);
+        Assert.Contains("Báo Admin", _loop.Stopped[Eng], StringComparison.Ordinal);
+        Assert.Equal(pulls, _transport.Pulls);   // not retried on its own
+    }
+
     private sealed class Factory(string path) : IDbContextFactory<LocalDbContext>
     {
         public LocalDbContext CreateDbContext() =>
@@ -197,6 +212,9 @@ public sealed class SyncLoopTests : IAsyncDisposable
         public List<ChangeEnvelope> Pushed { get; } = [];
         public Queue<PullResult> Pages { get; } = new();
         public int Pulls { get; private set; }
+
+        /// <summary>When set, every pull fails with a hub error carrying this message.</summary>
+        public string? HubError { get; set; }
         private readonly List<ChangeEnvelope> _log = [];
 
         public event EventHandler<ConnectionState>? StateChanged;
@@ -243,6 +261,11 @@ public sealed class SyncLoopTests : IAsyncDisposable
         public Task<PullResult> PullAsync(Guid engagementId, SyncCursor since, int maxChanges, CancellationToken cancellationToken)
         {
             Pulls++;
+            if (HubError is not null)
+            {
+                throw new Microsoft.AspNetCore.SignalR.HubException(HubError);
+            }
+
             if (Pages.Count > 0)
             {
                 return Task.FromResult(Pages.Dequeue());

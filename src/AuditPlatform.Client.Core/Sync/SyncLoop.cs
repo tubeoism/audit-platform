@@ -314,6 +314,14 @@ public sealed class SyncLoop : IAsyncDisposable
             // Never retried on its own: the replica stays at its last good change until it is rebuilt from the master.
             return Stop(unit, engagementId, $"Bản trên máy không khớp với máy chủ và đã dừng đồng bộ để không lệch thêm: {ex.Message}");
         }
+        catch (HubException ex) when (ex.Message.Contains(SyncErrorCodes.ReplicaDiverged, StringComparison.Ordinal))
+        {
+            // The master has other changes at the positions this replica holds: restored from an older backup, then grown.
+            return Stop(unit, engagementId,
+                "Lịch sử thay đổi trên máy chủ khác với bản trên máy bạn (nghi máy chủ đã khôi phục từ bản sao lưu rồi nhận thêm thay đổi). " +
+                "Báo Admin trước khi dựng lại: dựng lại sẽ bỏ khỏi máy này các thay đổi mà máy chủ không có " +
+                "(bản sao toàn bộ dữ liệu cục bộ được lưu lại trước).");
+        }
         catch (HubException ex) when (ex.Message.Contains(SyncErrorCodes.ReplicaAhead, StringComparison.Ordinal))
         {
             // The master's log is shorter than this replica: the master was most likely restored from an older backup.
