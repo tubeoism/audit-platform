@@ -170,7 +170,7 @@ public sealed class LocalReplicaTests : IDisposable
         _db.Outbox.Add(Outbox(refused, OutboxState.Rejected, "refused"));
         await _db.SaveChangesAsync(Ct);
 
-        var report = await _replica.RebuildAsync(Eng, me, Ct);
+        var report = await _replica.RebuildAsync(Eng, me, Preparer, Ct);
 
         Assert.Equal(new ReplicaRebuild(Resubmitted: 2, PendingKept: 1), report);
         Assert.Empty(await _db.ReplicaLog.ToListAsync(Ct));
@@ -201,12 +201,56 @@ public sealed class LocalReplicaTests : IDisposable
         _db.SyncState.Add(new SyncStateRow { EngagementId = other, LastPulledSequence = 1 });
         await _db.SaveChangesAsync(Ct);
 
-        var report = await _replica.RebuildAsync(Eng, me, Ct);
+        var report = await _replica.RebuildAsync(Eng, me, Preparer, Ct);
 
         Assert.Equal(new ReplicaRebuild(Resubmitted: 0, PendingKept: 1), report);
         Assert.Equal([mine.ChangeId], await _db.Outbox.Select(o => o.ChangeId).ToListAsync(Ct));
         Assert.Equal(1, await _db.ReplicaLog.CountAsync(r => r.EngagementId == other, Ct));
         Assert.Equal(1, await _db.Documents.CountAsync(d => d.EngagementId == other, Ct));
         Assert.Equal(1L, (await _db.SyncState.SingleAsync(s => s.EngagementId == other, Ct)).LastPulledSequence);
+    }
+
+    [Fact]
+    public async Task A_rebuild_puts_back_only_the_changes_of_the_signed_in_user_not_those_of_another_person_on_the_same_laptop()
+    {
+        var me = Guid.NewGuid();
+        var mine = FromClient(me, Preparer, new CreatePaper("AUP-CSH-03", 1, Preparer));
+        var theirs = FromClient(me, Manager, new SetField("exceptions_noted", "0", null));   // the same laptop, another person, earlier
+        await _replica.ApplyAsync(Eng, [mine, theirs], Ct);
+
+        var report = await _replica.RebuildAsync(Eng, me, Preparer, Ct);
+
+        // The master stamps a pushed change with the identity of the connection: sending the other person's work now
+        // would make it the signed-in user's.
+        Assert.Equal(new ReplicaRebuild(Resubmitted: 1, PendingKept: 0), report);
+        Assert.Equal([mine.ChangeId], await _db.Outbox.Select(o => o.ChangeId).ToListAsync(Ct));
+    }
+
+    [Fact]
+    public async Task A_rebuild_of_a_locked_engagement_puts_nothing_back_because_the_master_would_refuse_it_all()
+    {
+        var me = Guid.NewGuid();
+        await _replica.ApplyAsync(Eng, [FromClient(me, Preparer, new CreatePaper("AUP-CSH-03", 1, Preparer))], Ct);
+        _db.Engagements.Add(new LocalEngagementRow { Id = Eng, Code = "ENG-1", ClientName = "Client A", Status = EngagementStatus.Locked, IsReadOnly = true });
+        await _db.SaveChangesAsync(Ct);
+
+        var report = await _replica.RebuildAsync(Eng, me, Preparer, Ct);
+
+        Assert.Equal(new ReplicaRebuild(Resubmitted: 0, PendingKept: 0), report);
+        Assert.Empty(await _db.Outbox.ToListAsync(Ct));
+        Assert.Empty(await _db.ReplicaLog.ToListAsync(Ct));
+    }
+
+    [Fact]
+    public async Task A_change_this_client_cannot_read_stops_the_replica_without_offering_a_rebuild()
+    {
+        await SeedAsync();
+        var unreadable = FromMaster(Preparer, new SetField("sample_size", "25", null)) with { Payload = [0xFF, 0x00] };
+
+        var ex = await Assert.ThrowsAsync<ReplicaDivergedException>(() => _replica.ApplyAsync(Eng, [unreadable], Ct));
+
+        Assert.False(ex.RebuildHelps);
+        Assert.Contains("cập nhật", ex.Message, StringComparison.Ordinal);
+        Assert.True(new ReplicaDivergedException("gap").RebuildHelps);
     }
 }

@@ -162,18 +162,35 @@ public sealed partial class ShellViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(NeedsRebuild))]
     private async Task RebuildAsync(CancellationToken cancellationToken)
     {
-        var stopped = _loop.Stopped.Keys.ToList();
-        var resent = 0;
-        foreach (var id in stopped)
+        if (_user is null)
         {
-            resent += (await _loop.RebuildAsync(id, cancellationToken)).Resubmitted;
+            return;
         }
 
-        NeedsRebuild = _loop.Stopped.Count > 0;
-        LastError = null;
-        Notice = resent > 0
-            ? $"Đã dựng lại {stopped.Count} engagement từ master; {resent} thay đổi của bạn được gửi lại."
-            : $"Đã dựng lại {stopped.Count} engagement từ master. Không có thay đổi nào của bạn bị mất.";
+        Notice = null;
+        var rebuilt = 0;
+        var resent = 0;
+        try
+        {
+            foreach (var id in _loop.Rebuildable)
+            {
+                resent += (await _loop.RebuildAsync(id, _user.Id, cancellationToken)).Resubmitted;
+                rebuilt++;
+            }
+
+            LastError = null;
+            Notice = resent > 0
+                ? $"Đã dựng lại {rebuilt} engagement từ master; {resent} thay đổi của bạn được gửi lại."
+                : $"Đã dựng lại {rebuilt} engagement từ master. Không có thay đổi nào của bạn bị mất.";
+        }
+#pragma warning disable CA1031 // A failed rebuild (a busy or damaged local database) is reported to the user, not thrown at the UI thread.
+        catch (Exception ex) when (ex is not OperationCanceledException)
+#pragma warning restore CA1031
+        {
+            LastError = $"Không dựng lại được bản sao ({rebuilt} engagement đã xong): {ex.Message}";
+        }
+
+        NeedsRebuild = _loop.Rebuildable.Count > 0;
     }
 
     /// <summary>
@@ -227,7 +244,7 @@ public sealed partial class ShellViewModel : ObservableObject
         LastError = status.Connection == ConnectionState.Online ? status.Error : null;
 
         // A stopped engagement is not retried on its own: the user chooses to rebuild it.
-        NeedsRebuild = _loop.Stopped.Count > 0;
+        NeedsRebuild = _loop.Rebuildable.Count > 0;
         if (NeedsRebuild)
         {
             Notice = null;

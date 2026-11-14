@@ -218,13 +218,14 @@ public sealed class SyncLoopTests : IAsyncDisposable
 
         Assert.Contains("dựng lại", _loop.Stopped[Eng], StringComparison.Ordinal);
         Assert.Contains("dựng lại", _loop.Status.Error, StringComparison.Ordinal);
+        Assert.Equal([Eng], _loop.Rebuildable);
         var pulls = _transport.Pulls;
         await _loop.RunOnceAsync(Ct);
         Assert.Equal(pulls, _transport.Pulls);
 
         // Rebuilding keeps everything the author did, and works while the master still refuses.
         var pushed = _transport.Pushed.Count;
-        var rebuilt = await _loop.RebuildAsync(Eng, Ct);
+        var rebuilt = await _loop.RebuildAsync(Eng, Me, Ct);
         Assert.Equal(new ReplicaRebuild(Resubmitted: 2, PendingKept: 0), rebuilt);
         Assert.Empty(_loop.Stopped);
         await using (var db = _contexts.CreateDbContext())
@@ -245,6 +246,20 @@ public sealed class SyncLoopTests : IAsyncDisposable
             var doc = await new LocalReplica(db).GetDocumentAsync(Eng, paper, Ct);
             Assert.Equal("0", doc.Value("exceptions_noted"));
         }
+    }
+
+    [Fact]
+    public async Task A_change_this_client_cannot_read_stops_the_engagement_but_is_not_offered_for_rebuild()
+    {
+        _source.Next = new DirectorySnapshot([Info()], []);
+        _transport.Pages.Enqueue(new PullResult(
+            [new ChangeEnvelope(Guid.NewGuid(), Eng, Guid.NewGuid(), Me, Guid.NewGuid(), DateTimeOffset.UnixEpoch, FieldPayload.Kind, [0xFF, 0x00], Sequence: 1)],
+            new SyncCursor(1), false));
+
+        await _loop.RunOnceAsync(Ct);
+
+        Assert.Contains("cập nhật", _loop.Stopped[Eng], StringComparison.Ordinal);
+        Assert.Empty(_loop.Rebuildable);
     }
 
     private sealed class Factory(string path) : IDbContextFactory<LocalDbContext>

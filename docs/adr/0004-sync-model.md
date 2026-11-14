@@ -202,10 +202,18 @@ the log from the start, and it keeps everything the author did:
 | What | Treatment |
 |---|---|
 | Changes waiting in the outbox | Stay, in the same order |
-| Changes this laptop made that the old master had accepted (in the replica log, not in the outbox) | Go back into the outbox, **before** the waiting ones. A restored master may lack them; the master answers each as it answers any push: Duplicate if it has it, otherwise it decides it again (and may flag a conflict, which the author sees) |
+| Changes **the signed-in user** made on this laptop that the old master had accepted (in the replica log, not in the outbox) | Go back into the outbox, **before** the waiting ones. A restored master may lack them; the master answers each as it answers any push: Duplicate if it has it, otherwise it decides it again (and may flag a conflict, which the author sees). The whole history of the user is sent, mostly to be answered Duplicate: the replica cannot tell which part the master lost until it has asked |
 | Flagged and refused changes | Keep their state and reason |
 | Evidence files, the directory, other engagements | Untouched |
 
-Limits: only changes made on *this* installation are re-sent (rows carry the client id); another laptop's work that the
-restored master lost has to be re-sent by that laptop, which will be told to rebuild by the same check. The master side of
+Limits:
+- Only changes made on *this* installation **by the signed-in user** are re-sent. The master stamps a pushed change with the
+  identity of the connection, so another person's work on a shared laptop sent under this user's name would be misattributed;
+  it is re-sent when that person rebuilds. Another laptop's work that the restored master lost has to be re-sent by that
+  laptop, which will be told to rebuild by the same check.
+- A locked or archived engagement re-sends nothing: the master refuses every change to it, and the refused rows would stay
+  in the outbox for good. Its replica is simply read again.
+- A replica that stopped because of a change this version of the client cannot read is **not** offered for rebuild
+  (`ReplicaDivergedException.RebuildHelps`): a rebuild would read the same change and stop again. The message says to update
+  the application. The master side of
 a restore (what the backup lost) is a matter for `RESTORE.md`, not for the clients.

@@ -31,6 +31,7 @@ public sealed class SyncLoop : IAsyncDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly HashSet<Guid> _subscribed = [];
     private readonly Dictionary<Guid, string> _stopped = [];
+    private readonly HashSet<Guid> _beyondRebuild = [];
     private readonly Lock _gate = new();
     private readonly HashSet<Guid> _locked = [];
     private Task? _running;
@@ -92,6 +93,18 @@ public sealed class SyncLoop : IAsyncDisposable
         }
     }
 
+    /// <summary>The stopped engagements that a rebuild can bring back (not those stopped by a change this client cannot read).</summary>
+    public IReadOnlyCollection<Guid> Rebuildable
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _stopped.Keys.Where(id => !_beyondRebuild.Contains(id))];
+            }
+        }
+    }
+
     public void Start() => _running ??= Task.Run(() => RunAsync(_stop.Token));
 
     /// <summary>Asks for a round as soon as possible. Cheap, and safe from any thread.</summary>
@@ -116,17 +129,19 @@ public sealed class SyncLoop : IAsyncDisposable
     /// a round in progress, keeps everything the author did (<see cref="LocalReplica.RebuildAsync"/>) and works offline;
     /// the next round pushes what has to be sent again and pulls the log from the start.
     /// </summary>
-    public async Task<ReplicaRebuild> RebuildAsync(Guid engagementId, CancellationToken cancellationToken)
+    /// <param name="authorUserId">The signed-in user: only this user's changes are put back for sending.</param>
+    public async Task<ReplicaRebuild> RebuildAsync(Guid engagementId, Guid authorUserId, CancellationToken cancellationToken)
     {
         await _round.WaitAsync(cancellationToken);
         ReplicaRebuild result;
         try
         {
             await using var unit = await _units.OpenAsync(cancellationToken);
-            result = await unit.Replica.RebuildAsync(engagementId, _options.ClientId, cancellationToken);
+            result = await unit.Replica.RebuildAsync(engagementId, _options.ClientId, authorUserId, cancellationToken);
             lock (_gate)
             {
                 _stopped.Remove(engagementId);
+                _beyondRebuild.Remove(engagementId);
             }
         }
         finally
@@ -315,6 +330,14 @@ public sealed class SyncLoop : IAsyncDisposable
             lock (_gate)
             {
                 _stopped[engagementId] = ex.Message;
+                if (ex.RebuildHelps)
+                {
+                    _beyondRebuild.Remove(engagementId);
+                }
+                else
+                {
+                    _beyondRebuild.Add(engagementId);
+                }
             }
 
             return (false, ex.Message);

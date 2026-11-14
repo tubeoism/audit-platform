@@ -11,7 +11,14 @@ namespace AuditPlatform.Client.Core.Sync;
 /// (for a sign-off: the content hash it recomputed differs from the one the master sealed). The replica stops at the
 /// last good change instead of drifting; it has to be rebuilt from the master.
 /// </summary>
-public sealed class ReplicaDivergedException(string message, Exception? inner = null) : Exception(message, inner);
+public sealed class ReplicaDivergedException(string message, Exception? inner = null, bool rebuildHelps = true) : Exception(message, inner)
+{
+    /// <summary>
+    /// False when the cause is not in the replica but in this client (a change it cannot read): a rebuild would read
+    /// the same change again and stop again, so it is not offered; the client has to be updated.
+    /// </summary>
+    public bool RebuildHelps { get; } = rebuildHelps;
+}
 
 /// <param name="Resubmitted">Changes this laptop made that the old master had accepted, put back in the outbox to be sent again.</param>
 /// <param name="PendingKept">Changes that were already waiting in the outbox.</param>
@@ -65,16 +72,25 @@ public sealed class LocalReplica(LocalDbContext db) : ILocalChangeSink
     /// Evidence files and the directory are not touched.
     /// </summary>
     /// <param name="clientId">This installation's id: the log rows it authored carry it.</param>
-    public async Task<ReplicaRebuild> RebuildAsync(Guid engagementId, Guid clientId, CancellationToken cancellationToken)
+    /// <param name="authorUserId">
+    /// The signed-in user. Only the changes this user made are put back: the master stamps a pushed change with the
+    /// identity of the connection, so another person's work sent under this one's name would be misattributed.
+    /// </param>
+    public async Task<ReplicaRebuild> RebuildAsync(Guid engagementId, Guid clientId, Guid authorUserId, CancellationToken cancellationToken)
     {
         // Entities the context still tracks would be stale after the delete below.
         db.ChangeTracker.Clear();
         await using var tx = await db.Database.BeginTransactionAsync(cancellationToken);
 
-        var own = await db.ReplicaLog.AsNoTracking()
-            .Where(r => r.EngagementId == engagementId && r.ClientId == clientId)
-            .OrderBy(r => r.Sequence)
-            .ToListAsync(cancellationToken);
+        // A locked or archived engagement accepts nothing more: its replica is the archive, and putting changes back
+        // would only leave them refused in the outbox for good.
+        var readOnly = await db.Engagements.AsNoTracking().AnyAsync(e => e.Id == engagementId && e.IsReadOnly, cancellationToken);
+        var own = readOnly
+            ? []
+            : await db.ReplicaLog.AsNoTracking()
+                .Where(r => r.EngagementId == engagementId && r.ClientId == clientId && r.AuthorUserId == authorUserId)
+                .OrderBy(r => r.Sequence)
+                .ToListAsync(cancellationToken);
         var outbox = await db.Outbox.AsNoTracking().Where(o => o.EngagementId == engagementId).ToListAsync(cancellationToken);
         var known = outbox.Select(o => o.ChangeId).ToHashSet();
         var pending = outbox.Where(o => o.State == OutboxState.Pending).OrderBy(o => o.LocalSequence).ToList();
@@ -104,7 +120,7 @@ public sealed class LocalReplica(LocalDbContext db) : ILocalChangeSink
             {
                 ChangeId = row.ChangeId, EngagementId = engagementId, DocumentId = row.DocumentId, AuthorUserId = row.AuthorUserId,
                 CreatedAt = row.CreatedAt, PayloadKind = row.PayloadKind, Payload = row.Payload, State = OutboxState.Pending,
-                Attempts = row.Attempts,
+                Attempts = row.Attempts, LastError = row.LastError,
             });
         }
 
@@ -166,7 +182,9 @@ public sealed class LocalReplica(LocalDbContext db) : ILocalChangeSink
             }
             catch (JsonException e)
             {
-                throw new ReplicaDivergedException($"Change {change.ChangeId} cannot be read by this version of the client.", e);
+                throw new ReplicaDivergedException(
+                    $"Thay đổi {change.ChangeId} không đọc được bằng phiên bản ứng dụng này: hãy cập nhật ứng dụng. / Change {change.ChangeId} cannot be read by this version of the client: update the application.",
+                    e, rebuildHelps: false);
             }
 
             if (decided.Decision == Decision.Rejected)

@@ -26,15 +26,18 @@ public enum SignOffStatus
 
 public sealed record SignOffAttempt(SignOffStatus Status, string? Reason, Guid ChangeId, string? ContentHash, SyncCursor Cursor);
 
+/// <summary>The replica and the master no longer share a history; the client is told with <see cref="SyncErrors.ReplicaMustRebuild"/>.</summary>
+public abstract class ReplicaMustRebuildException(string message) : Exception(message);
+
 /// <summary>The client's cursor is beyond the end of the master's log, e.g. after the master was restored from a backup.</summary>
-public sealed class ReplicaAheadOfMasterException(long clientSequence, long masterSequence) : Exception(
+public sealed class ReplicaAheadOfMasterException(long clientSequence, long masterSequence) : ReplicaMustRebuildException(
     $"{SyncErrors.ReplicaMustRebuild}: This replica is at change {clientSequence} but the master's log ends at {masterSequence}. The replica must be rebuilt from the master.");
 
 /// <summary>
 /// The client's last change is not the one the master has at that position: the master was restored from an older
 /// backup and has grown past it with other changes, so the numbers line up but the histories do not.
 /// </summary>
-public sealed class ReplicaDivergedFromMasterException(long sequence) : Exception(
+public sealed class ReplicaDivergedFromMasterException(long sequence) : ReplicaMustRebuildException(
     $"{SyncErrors.ReplicaMustRebuild}: The master's log has a different change at position {sequence} than this replica. The replica must be rebuilt from the master.");
 
 /// <summary>

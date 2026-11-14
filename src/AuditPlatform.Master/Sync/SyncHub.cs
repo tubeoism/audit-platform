@@ -53,11 +53,7 @@ internal sealed class SyncHub(SyncCoordinator coordinator, IOptions<MasterOption
         {
             throw new HubException(ex.Message);
         }
-        catch (ReplicaAheadOfMasterException ex)
-        {
-            throw new HubException(ex.Message);
-        }
-        catch (ReplicaDivergedFromMasterException ex)
+        catch (ReplicaMustRebuildException ex)
         {
             throw new HubException(ex.Message);
         }
