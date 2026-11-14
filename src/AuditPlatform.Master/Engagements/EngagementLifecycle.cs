@@ -8,6 +8,7 @@ using AuditPlatform.Domain.WorkingPapers;
 using AuditPlatform.Master.Auth;
 using AuditPlatform.Master.Data;
 using AuditPlatform.Master.Data.Entities;
+using AuditPlatform.Master.Notifications;
 using AuditPlatform.Sync;
 using Microsoft.EntityFrameworkCore;
 
@@ -19,8 +20,11 @@ namespace AuditPlatform.Master.Engagements;
 /// in Reporting, every working paper signed off at both review levels with nothing open, and a fresh authenticator
 /// code bought for the exact state being locked (the same step-up as a sign-off).
 /// </summary>
-public sealed class EngagementLifecycle(MasterDbContext db, IAuditLog auditLog, ISignOffStepUp stepUp, TimeProvider clock)
+public sealed class EngagementLifecycle(MasterDbContext db, IAuditLog auditLog, ISignOffStepUp stepUp, TimeProvider clock, NotificationSignal notifications)
 {
+    /// <summary>Notification kind: the engagement was locked. It concerns no single working paper, so the document and change ids are empty.</summary>
+    public const string LockedKind = "engagement-locked";
+
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     public async Task<Outcome<EngagementStatus>> AdvanceAsync(Actor actor, Guid engagementId, EngagementStatus target, CancellationToken cancellationToken)
@@ -89,8 +93,20 @@ public sealed class EngagementLifecycle(MasterDbContext db, IAuditLog auditLog, 
         row!.Status = EngagementStatus.Locked;
         row.LockedAt = now;
         row.LockedBy = actor.UserId;
+
+        // Written with the lock itself, so that nobody is left unaware of a lock that happened; the mail goes out afterwards.
+        foreach (var member in row.Members.Select(m => m.UserId).Where(u => u != actor.UserId).Distinct().Order())
+        {
+            db.Notifications.Add(new NotificationRow
+            {
+                Id = Guid.NewGuid(), Kind = LockedKind, RecipientUserId = member, EngagementId = row.Id,
+                DocumentId = Guid.Empty, ChangeId = Guid.Empty, ActorUserId = actor.UserId, CreatedAt = now,
+            });
+        }
+
         await WriteAsync(actor, "engagement.locked", row, new { digest = readiness.Digest, head = readiness.Head, papers = readiness.PaperCount }, cancellationToken);
         await tx.CommitAsync(cancellationToken);
+        notifications.Pulse();
         return new LockResponse(now, readiness.Digest);
     }
 

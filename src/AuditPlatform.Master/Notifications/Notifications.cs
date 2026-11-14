@@ -4,6 +4,7 @@ using AuditPlatform.AuditLog;
 using AuditPlatform.Master.Auth;
 using AuditPlatform.Master.Data;
 using AuditPlatform.Master.Data.Entities;
+using AuditPlatform.Master.Engagements;
 using AuditPlatform.Master.Sync;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -34,7 +35,7 @@ public sealed class NotificationSignal
 }
 
 /// <summary>
-/// Sends the notifications the master owes (today: "your sign-off was broken by an edit"). Rows are written by the
+/// Sends the notifications the master owes ("your sign-off was broken by an edit", "the engagement was locked"). Rows are written by the
 /// transaction that caused them, so a notification cannot be lost between the event and the mail; delivery is
 /// at-least-once with retries, and the row stays as the record that the person was told.
 /// </summary>
@@ -73,7 +74,9 @@ public sealed class NotificationSender(MasterDbContext db, IEmailSender mail, IA
                 await using var tx = await db.Database.BeginTransactionAsync(cancellationToken);
                 await db.Notifications.Where(x => x.Id == n.Id)
                     .ExecuteUpdateAsync(s => s.SetProperty(x => x.SentAt, now).SetProperty(x => x.LastError, (string?)null), cancellationToken);
-                await auditLog.AppendAsync(new AuditEvent(now, Guid.Empty, $"notify.{n.Kind}.sent", "working_paper", n.DocumentId.ToString("D"), n.EngagementId,
+                var concernsEngagement = n.Kind == EngagementLifecycle.LockedKind;
+                await auditLog.AppendAsync(new AuditEvent(now, Guid.Empty, $"notify.{n.Kind}.sent", concernsEngagement ? "engagement" : "working_paper",
+                    (concernsEngagement ? n.EngagementId : n.DocumentId).ToString("D"), n.EngagementId,
                     JsonSerializer.Serialize(new { notificationId = n.Id, recipient = n.RecipientUserId, changeId = n.ChangeId, attempt = n.Attempts + 1 }, Json)),
                     cancellationToken);
                 await tx.CommitAsync(cancellationToken);
@@ -92,7 +95,7 @@ public sealed class NotificationSender(MasterDbContext db, IEmailSender mail, IA
 
     private async Task<string?> TrySendAsync(NotificationRow n, CancellationToken cancellationToken)
     {
-        if (n.Kind != FieldSyncEngine.SealBrokenKind)
+        if (n.Kind is not (FieldSyncEngine.SealBrokenKind or EngagementLifecycle.LockedKind))
         {
             return $"Unknown notification kind '{n.Kind}'.";
         }
@@ -105,10 +108,15 @@ public sealed class NotificationSender(MasterDbContext db, IEmailSender mail, IA
 
         var actor = await db.Users.AsNoTracking().Where(u => u.Id == n.ActorUserId).Select(u => u.DisplayName).FirstOrDefaultAsync(cancellationToken);
         var engagement = await db.Engagements.AsNoTracking().Where(e => e.Id == n.EngagementId).Select(e => e.Code).FirstAsync(cancellationToken);
-        var template = await db.SyncDocuments.AsNoTracking().Where(d => d.DocumentId == n.DocumentId).Select(d => d.TemplateCode).FirstOrDefaultAsync(cancellationToken);
-
         try
         {
+            if (n.Kind == EngagementLifecycle.LockedKind)
+            {
+                await mail.SendAsync(EmailTemplates.EngagementLocked(recipient.Email, recipient.DisplayName, engagement, actor ?? "-", n.CreatedAt), cancellationToken);
+                return null;
+            }
+
+            var template = await db.SyncDocuments.AsNoTracking().Where(d => d.DocumentId == n.DocumentId).Select(d => d.TemplateCode).FirstOrDefaultAsync(cancellationToken);
             await mail.SendAsync(EmailTemplates.SealBroken(recipient.Email, recipient.DisplayName, engagement, template ?? "-", actor ?? "-", n.CreatedAt), cancellationToken);
             return null;
         }

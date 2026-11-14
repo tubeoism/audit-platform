@@ -92,6 +92,17 @@ public static class EmailTemplates
             null, null);
     }
 
+    /// <summary>Tells a member that the engagement was locked and is now read-only. Carries no engagement content.</summary>
+    public static EmailMessage EngagementLocked(string to, string name, string engagementCode, string lockedBy, DateTimeOffset at)
+    {
+        var when = at.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'", System.Globalization.CultureInfo.InvariantCulture);
+        return Build(to, name,
+            $"Hợp đồng {engagementCode} đã được khoá / Engagement {engagementCode} was locked",
+            $"Hợp đồng {engagementCode} đã được {lockedBy} khoá lúc {when}. Từ giờ không thể sửa giấy tờ làm việc, ghi chú hay bằng chứng của hợp đồng này, và việc khoá không thể mở lại. Thay đổi chưa gửi trên máy bạn (nếu có) sẽ bị từ chối; hãy mở Audit Platform để kiểm tra.",
+            $"Engagement {engagementCode} was locked by {lockedBy} at {when}. Its working papers, notes and evidence can no longer be changed, and the lock cannot be undone. Any change still unsent on your laptop will be refused; open Audit Platform to check.",
+            null, null);
+    }
+
     private static string Hours(TimeSpan t) => ((int)Math.Round(t.TotalHours)).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     private static string Minutes(TimeSpan t) => ((int)Math.Round(t.TotalMinutes)).ToString(System.Globalization.CultureInfo.InvariantCulture);
