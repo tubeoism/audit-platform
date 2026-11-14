@@ -130,6 +130,7 @@ public sealed class SyncAgentTests : IDisposable
         public Dictionary<Guid, ChangeOutcome> Outcomes { get; } = [];
         public Queue<PullResult> Pages { get; } = new();
         public List<long> PulledFrom { get; } = [];
+        public List<SyncCursor> Cursors { get; } = [];
 
         public event EventHandler<ConnectionState>? StateChanged { add { } remove { } }
         public event EventHandler<Guid>? ChangesAvailable { add { } remove { } }
@@ -149,8 +150,35 @@ public sealed class SyncAgentTests : IDisposable
         public Task<PullResult> PullAsync(Guid engagementId, SyncCursor since, int maxChanges, CancellationToken cancellationToken)
         {
             PulledFrom.Add(since.Sequence);
+            Cursors.Add(since);
             return Task.FromResult(Pages.Count > 0 ? Pages.Dequeue() : new PullResult([], since, false));
         }
+    }
+
+    [Fact]
+    public async Task The_pull_names_the_last_change_the_replica_holds_so_the_master_can_compare_histories()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var held = Guid.NewGuid();
+        _db.ReplicaLog.Add(new ReplicaChangeRow
+        {
+            EngagementId = Eng, Sequence = 7, ChangeId = held, DocumentId = Guid.NewGuid(), AuthorUserId = Guid.NewGuid(), ClientId = Guid.NewGuid(),
+            ClientCreatedAt = DateTimeOffset.UnixEpoch, PayloadKind = "test-v1", Payload = [1],
+        });
+        _db.SyncState.Add(new SyncStateRow { EngagementId = Eng, LastPulledSequence = 7 });
+        await _db.SaveChangesAsync(ct);
+
+        await _agent.PullAsync(Eng, ct);
+
+        Assert.Equal(new SyncCursor(7, held), Assert.Single(_transport.Cursors));
+    }
+
+    [Fact]
+    public async Task A_first_pull_names_no_change()
+    {
+        await _agent.PullAsync(Eng, TestContext.Current.CancellationToken);
+
+        Assert.Equal(new SyncCursor(0, null), Assert.Single(_transport.Cursors));
     }
 
     private sealed class RecordingSink : ILocalChangeSink

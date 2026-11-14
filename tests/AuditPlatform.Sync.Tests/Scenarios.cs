@@ -571,6 +571,25 @@ public sealed class Scenarios(PostgresFixture pg) : IClassFixture<PostgresFixtur
         Assert.Contains("rebuilt", ex.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task A_replica_whose_last_change_is_not_the_masters_is_told_so_even_when_the_numbers_line_up()
+    {
+        // The master was restored from an older backup and has grown past this laptop with different changes:
+        // position 3 exists on both sides, but it is not the same change.
+        using var w = await FieldWorld.StartAsync(MasterKind.Postgres, pg);
+        var user = w.Preparer.UserId;
+        var all = (await w.Master.PullAsync(user, w.Engagement, SyncCursor.Start, 100)).Changes;
+        var held = all[2];
+        var after = all.Count - held.Sequence;
+
+        // The same change at that position, or no id at all (an older client): nothing is wrong.
+        Assert.Equal(after, (await w.Master.PullAsync(user, w.Engagement, new SyncCursor(held.Sequence, held.ChangeId), 100)).Changes.Count);
+        Assert.Equal(after, (await w.Master.PullAsync(user, w.Engagement, new SyncCursor(held.Sequence), 100)).Changes.Count);
+
+        await Assert.ThrowsAsync<ReplicaDivergedFromMasterException>(
+            () => w.Master.PullAsync(user, w.Engagement, new SyncCursor(held.Sequence, Guid.NewGuid()), 100));
+    }
+
     /// <summary>Returns a different, scripted time on every reading; stays on the last one.</summary>
     private sealed class SteppingClock(params TimeSpan[] offsets) : TimeProvider
     {
