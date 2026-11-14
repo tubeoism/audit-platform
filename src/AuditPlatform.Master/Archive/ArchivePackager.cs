@@ -141,6 +141,7 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
 
         ArchiveTarResult written;
         ArchiveVerification checkedFile;
+        var finished = false;
         try
         {
             await using (var file = new FileStream(part, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 1 << 16, FileOptions.Asynchronous))
@@ -151,12 +152,21 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
             }
 
             File.Move(part, path);
+            finished = true;
         }
         catch (Exception e) when (e is ArchiveIntegrityException or EvidenceIntegrityException or FileNotFoundException or DirectoryNotFoundException or IOException)
         {
-            File.Delete(part);
             await WriteAuditAsync(actor, "engagement.archive.refused", engagement, new { failed = e.Message }, cancellationToken);
             return new AuthFailure("archive_failed", "Ghi gói lưu trữ không thành công: " + e.Message);
+        }
+        finally
+        {
+            // Whatever stopped the write (a failed check, a cancellation, a full disk), no half-written package stays
+            // behind to block the next run.
+            if (!finished)
+            {
+                File.Delete(part);
+            }
         }
 
         var info = new ArchivePackageInfo(id, engagement.Code, Path.GetFileName(path), checkedFile.Bytes, checkedFile.TarSha256, written.PackageDigest, lockDigest,
