@@ -232,6 +232,8 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
         await AdminAsync(null, "engagement", "member", code, an.Email, "preparer");
         await AdminAsync(null, "engagement", "member", code, binh.Email, "preparer");
         await AdminAsync(null, "engagement", "member", code, reviewer.Email, "managerqa");
+        // The audit log is shared with the other tests of this class, so imports are counted from here.
+        var importsBefore = (await factory.AuditAsync()).Count(a => a.Action == "templates.imported");
         Assert.Contains("thêm 2", await AdminAsync(CashArea, "templates", "import", "en"), StringComparison.Ordinal);
         // Importing the same text again adds nothing; a changed procedure becomes version 2 and version 1 is kept.
         Assert.Contains("thêm 0, không đổi 2", await AdminAsync(CashArea, "templates", "import", "en"), StringComparison.Ordinal);
@@ -341,7 +343,7 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
         var trail = await factory.AuditAsync();
         Assert.Single(trail, a => a.Action == "engagement.created" && a.PayloadJson.Contains(code, StringComparison.Ordinal));
         Assert.Equal(3, trail.Count(a => a.Action == "engagement.member.added" && a.PayloadJson.Contains(code, StringComparison.Ordinal)));
-        Assert.Equal(2, trail.Count(a => a.Action == "templates.imported"));
+        Assert.Equal(importsBefore + 2, trail.Count(a => a.Action == "templates.imported"));
         Assert.Single(trail, a => a.Action == "sync.resolve.accepted" && a.ActorUserId == an.Id);
         // Binh's forced button never left the laptop; the master's own refusal of such a change is scenario S2.
         Assert.DoesNotContain(trail, a => a.Action.StartsWith("sync.resolve", StringComparison.Ordinal) && a.ActorUserId == binh.Id);
@@ -394,7 +396,16 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
         await AdminAsync(null, "engagement", "member", code, an.Email, "preparer");
         await AdminAsync(null, "engagement", "member", code, binh.Email, "preparer");
         await AdminAsync(null, "engagement", "member", code, reviewer.Email, "managerqa");
-        await AdminAsync(CashArea, "templates", "import", "en");
+        // Its own procedure, so that this test and the one above can run in either order on the shared library.
+        await AdminAsync(CashArea[..CashArea.IndexOf("### 1.", StringComparison.Ordinal)] + """
+            ### 9. AUP-CSH-90: Bank Confirmations
+
+            - **Procedure:** Obtain confirmations of the bank balances.
+            - **Audit Content:**
+                - Agree each confirmation to the ledger.
+            - **Evidence to Check:**
+                - Bank confirmation letters.
+            """, "templates", "import", "en");
 
         await using var deskAn = new Desk(factory, an);
         await using var deskBinh = new Desk(factory, binh);
@@ -407,8 +418,9 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
         var engagement = deskAn.Engagement.EngagementId;
 
         // ----- An creates a paper and attaches two files before anything is synchronised.
-        deskAn.Engagement.SelectedTemplate = deskAn.Engagement.AreaTemplates.Single(t => t.Template.Code == "AUP-CSH-03");
+        deskAn.Engagement.SelectedTemplate = deskAn.Engagement.AreaTemplates.Single(t => t.Template.Code == "AUP-CSH-90");
         await deskAn.Engagement.CreatePaperCommand.ExecuteAsync(null);
+        Assert.Null(deskAn.Engagement.Error);
         var countSheet = deskAn.Write("Biên bản kiểm quỹ 31-12.pdf", "cash count sheet, signed by the cashier");
         var ledger = deskAn.Write("So quy.xlsx", "cash ledger export");
         await deskAn.Paper.AttachCommand.ExecuteAsync(new[] { countSheet, ledger, deskAn.Write("empty.txt", ""), countSheet });
