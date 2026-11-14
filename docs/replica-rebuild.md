@@ -9,6 +9,7 @@ can always be thrown away and pulled again from sequence 0.
 | Cause | Detected as | Message to the user |
 |---|---|---|
 | A gap, an unreadable change, or a change the local reducer refuses (including a sign-off hash that does not match) | `ReplicaDivergedException` on apply | "Bản trên máy không khớp với máy chủ và đã dừng đồng bộ..." |
+| The master has *other* changes at the positions the laptop holds (master restored from an older backup, then grown past the laptop) | Hub error `replica_diverged` on pull: the pull cursor carries the id of the laptop's last change (`SyncCursor.AnchorChangeId`, read from its own log) and the master compares it with the change it has at that position. A client that sends no id skips the check |
 | The laptop is ahead of the master (master restored from an older backup) | Hub error `replica_ahead` on pull | "Máy chủ đang ở thời điểm cũ hơn bản trên máy bạn... Báo Admin trước khi dựng lại" |
 
 Sync of that engagement then stays stopped (other engagements continue) until the user rebuilds. The engagement screen shows

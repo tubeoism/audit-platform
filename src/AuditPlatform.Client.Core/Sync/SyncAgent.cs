@@ -135,11 +135,24 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
             await db.SaveChangesAsync(cancellationToken);
         }
 
+        // The id of the last change this replica holds goes with the cursor, so the master can tell a restored history
+        // from the one this laptop followed (sequence numbers alone line up after a restore).
+        Guid? anchor = state.LastPulledSequence > 0
+            ? await db.ReplicaLog.AsNoTracking()
+                .Where(r => r.EngagementId == engagementId && r.Sequence == state.LastPulledSequence)
+                .Select(r => (Guid?)r.ChangeId)
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
+
         var received = 0;
         PullResult page;
         do
         {
-            page = await transport.PullAsync(engagementId, new SyncCursor(state.LastPulledSequence), PullBatchSize, cancellationToken);
+            page = await transport.PullAsync(engagementId, new SyncCursor(state.LastPulledSequence, anchor), PullBatchSize, cancellationToken);
+            if (page.Changes.Count > 0)
+            {
+                anchor = page.Changes[^1].ChangeId;
+            }
 
             // One transaction per page: the replica and the cursor move together, so a crash in between cannot
             // apply a page twice or skip one.
