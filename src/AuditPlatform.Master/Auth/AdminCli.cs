@@ -46,7 +46,7 @@ internal static class AdminCli
 
         if (!services.GetRequiredService<AuthKeys>().IsConfigured)
         {
-            await output.WriteLineAsync("Chưa có Auth__MasterKey trong /etc/audit-master/master.env. Chạy: sudo audit-auth-setup");
+            await output.WriteLineAsync("Chưa có Auth__MasterKey trong /etc/audit-master/master.env. Chạy: sudo audit-auth-key --init");
             return 1;
         }
 

@@ -85,6 +85,20 @@ jobs:
           done
           exit 1
 
+      - name: Check VM helper scripts against the repository
+        # Read-only. CD ships only the application; the scripts in /usr/local/sbin come from bootstrap-vm.sh and the
+        # backup/evidence setup scripts and go stale unless someone re-runs them. A mismatch is a warning, not a
+        # failure: the release is already live and the application fails closed on its own.
+        run: |
+          set +e
+          out="$(deploy/master/check-vm-drift.sh vm 2>&1)"; rc=$?
+          echo "$out"
+          if [[ $rc -ne 0 ]]; then
+            echo "::warning title=VM helper scripts differ from the repository::$(echo "$out" | tr '\n' ' ')"
+            { echo "### VM helper scripts differ from the repository"; echo; echo '```'; echo "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
+
       - name: Clean up key
         if: always()
         run: rm -f ~/.ssh/deploy
