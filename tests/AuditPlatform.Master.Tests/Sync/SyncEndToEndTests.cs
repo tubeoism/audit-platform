@@ -364,6 +364,15 @@ public sealed class SyncEndToEndTests(AuthFactory factory) : IClassFixture<AuthF
         Assert.Equal((EngagementStatus.Locked, managerUser.Id), (row.Status, row.LockedBy));
         Assert.NotNull(row.LockedAt);
 
+        // ----- Every other member is told by mail, once; the manager who locked and the outsider are not.
+        var before = factory.Mail.Sent.Count;
+        Assert.Equal(3, await DispatchNotificationsAsync());
+        var told = factory.Mail.Sent.Skip(before).Where(m => m.Subject.Contains("đã được khoá", StringComparison.Ordinal)).Select(m => m.ToAddress).Order().ToList();
+        Assert.Equal(new[] { preparerUser.Email, qaUser.Email, japanUser.Email }.Order(), told);
+        Assert.All(factory.Mail.Sent.Skip(before), m => Assert.DoesNotContain(managerUser.Email, m.ToAddress, StringComparison.Ordinal));
+        Assert.Equal(0, await DispatchNotificationsAsync());
+        Assert.Equal(3, (await factory.AuditAsync()).Count(a => a.Action == "notify.engagement-locked.sent" && a.EngagementId == engagement));
+
         // ----- After the lock nothing moves, and it cannot be taken back.
         Assert.Equal("engagement_locked", (await manager.Session.AdvanceEngagementAsync(engagement, nameof(EngagementStatus.Review), Ct)).Error?.Error);
         Assert.Equal("engagement_locked", (await manager.Session.LockEngagementAsync(engagement, ready.Digest, factory.NextCode(managerUser.Secret), Ct)).Error?.Error);

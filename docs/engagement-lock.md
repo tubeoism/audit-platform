@@ -31,11 +31,17 @@ does not fit and nothing is locked. The grant is not spent when preconditions fa
 `Locked`, `LockedAt`, `LockedBy`, writes `engagement.locked` (digest, head, paper count) and tells every connected member
 (`EngagementLocked`); laptops that were offline learn it from the directory at their next start.
 
+Every other member of the engagement (including reviewers) also gets an e-mail, bilingual, naming the engagement code, who locked it and
+when. The rows (`notifications`, kind `engagement-locked`) are written in the same transaction as the lock, so a crash between lock and
+mail loses nothing; delivery is at-least-once with the existing dispatcher, and each sent mail is audited as
+`notify.engagement-locked.sent`. The manager who locked is not mailed.
+
 Refusals on the audit log: `engagement.lock.refused` (preconditions), `engagement.lock.step_up_refused` (grant).
 
 ## Known limits
 
 - Changes a member made offline and had not yet pushed when the lock happened are refused by the master. They stay on that
   laptop as "bị từ chối" and are never sent again. The manager should ask the team to sync before locking.
-- No e-mail is sent on lock yet (the hub event and the audit log are the record).
+- The e-mail below carries no engagement content (only code, who locked, when); a member whose address bounces is retried for
+  12 attempts like any notification and the lock itself is not affected.
 - Packaging the locked engagement into `audit-archive` (status `Archived`) is a separate step: see [engagement-archive.md](engagement-archive.md). The package and the status change exist; the upload to the immutable bucket does not yet.
