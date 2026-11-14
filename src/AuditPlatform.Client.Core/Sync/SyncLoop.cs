@@ -1,6 +1,8 @@
 using AuditPlatform.Client.Core.Directory;
 using AuditPlatform.Client.Core.Evidence;
 using AuditPlatform.Client.Core.LocalStore;
+using AuditPlatform.Contracts.Sync;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 namespace AuditPlatform.Client.Core.Sync;
@@ -90,6 +92,33 @@ public sealed class SyncLoop : IAsyncDisposable
                 return new Dictionary<Guid, string>(_stopped);
             }
         }
+    }
+
+    /// <summary>
+    /// Throws away this laptop's replica of one engagement and pulls it again from the master (the unsent edits stay).
+    /// The local database is copied aside first; the copy's path is returned.
+    /// </summary>
+    public async Task<string> RebuildReplicaAsync(Guid engagementId, CancellationToken cancellationToken)
+    {
+        string copy;
+        await _round.WaitAsync(cancellationToken);
+        try
+        {
+            await using var unit = await _units.OpenAsync(cancellationToken);
+            copy = await ReplicaRebuild.RunAsync(unit.Db, _options, TimeProvider.System.GetUtcNow(), engagementId, cancellationToken);
+            lock (_gate)
+            {
+                _stopped.Remove(engagementId);
+            }
+        }
+        finally
+        {
+            _round.Release();
+        }
+
+        DataChanged?.Invoke(this, EventArgs.Empty);
+        Poke();
+        return copy;
     }
 
     public void Start() => _running ??= Task.Run(() => RunAsync(_stop.Token));
@@ -283,13 +312,28 @@ public sealed class SyncLoop : IAsyncDisposable
         catch (ReplicaDivergedException ex)
         {
             // Never retried on its own: the replica stays at its last good change until it is rebuilt from the master.
-            unit.Db.ChangeTracker.Clear();
-            lock (_gate)
-            {
-                _stopped[engagementId] = ex.Message;
-            }
-
-            return (false, ex.Message);
+            return Stop(unit, engagementId, $"Bản trên máy không khớp với máy chủ và đã dừng đồng bộ để không lệch thêm: {ex.Message}");
         }
+        catch (HubException ex) when (ex.Message.Contains(SyncErrorCodes.ReplicaAhead, StringComparison.Ordinal))
+        {
+            // The master's log is shorter than this replica: the master was most likely restored from an older backup.
+            return Stop(unit, engagementId,
+                "Máy chủ đang ở thời điểm cũ hơn bản trên máy bạn (nghi đã khôi phục từ bản sao lưu). Báo Admin trước khi dựng lại: " +
+                "dựng lại sẽ bỏ khỏi máy này các thay đổi mới hơn máy chủ (bản sao toàn bộ dữ liệu cục bộ được lưu lại trước).");
+        }
+    }
+
+    private (bool Changed, string? Error) Stop(LocalUnit unit, Guid engagementId, string reason)
+    {
+        unit.Db.ChangeTracker.Clear();
+        bool first;
+        lock (_gate)
+        {
+            first = !_stopped.ContainsKey(engagementId);
+            _stopped[engagementId] = reason;
+        }
+
+        // The forms have a banner to show the first time.
+        return (first, reason);
     }
 }
