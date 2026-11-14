@@ -257,9 +257,81 @@
             </ItemsControl.ItemTemplate>
           </ItemsControl>
 
+          <!-- Review notes: raised by a reviewer, answered by the preparer, closed by the reviewer who raised them. -->
+          <StackPanel Visibility="{Binding Notes.Count, Converter={StaticResource Present}}">
+            <TextBlock Text="Ý kiến soát xét" Style="{StaticResource SectionTitle}" />
+            <TextBlock Text="{Binding NotesSummary}" Style="{StaticResource Muted}" Margin="0,0,0,6" />
+            <ItemsControl ItemsSource="{Binding Notes}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border BorderBrush="#D5DAE1" BorderThickness="1" Padding="12,8" Margin="0,0,0,8">
+                    <StackPanel>
+                      <TextBlock Text="{Binding FieldLabel}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                      <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                      <TextBlock Text="{Binding RaisedBy}" Style="{StaticResource Muted}" FontSize="11.5" />
+                      <ItemsControl ItemsSource="{Binding Responses}" Margin="12,6,0,0">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate>
+                            <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,0,0,2" />
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                      <TextBlock Text="{Binding StateText}" FontSize="11.5" Margin="0,4,0,0">
+                        <TextBlock.Style>
+                          <Style TargetType="TextBlock" BasedOn="{StaticResource Muted}">
+                            <Style.Triggers>
+                              <DataTrigger Binding="{Binding IsOpen}" Value="True">
+                                <Setter Property="Foreground" Value="#9A5B00" />
+                              </DataTrigger>
+                            </Style.Triggers>
+                          </Style>
+                        </TextBlock.Style>
+                      </TextBlock>
+                      <StackPanel Visibility="{Binding CanRespond, Converter={StaticResource Present}}" Margin="0,6,0,0">
+                        <TextBox Text="{Binding ResponseText, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap"
+                                 MinHeight="40" MaxHeight="160" VerticalScrollBarVisibility="Auto" Padding="6" />
+                        <Button Content="Gửi trả lời" HorizontalAlignment="Left" Margin="0,4,0,0" CommandParameter="{Binding}"
+                                Command="{Binding DataContext.RespondCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" />
+                      </StackPanel>
+                      <Button Content="Xác nhận đã xử lý xong" HorizontalAlignment="Left" Margin="0,6,0,0" CommandParameter="{Binding}"
+                              Visibility="{Binding CanClear, Converter={StaticResource Present}}"
+                              Command="{Binding DataContext.ClearNoteCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" />
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+
+          <StackPanel Visibility="{Binding CanRaiseNote, Converter={StaticResource Present}}">
+            <TextBlock Text="Nêu ý kiến soát xét" Style="{StaticResource SectionTitle}" />
+            <TextBlock Text="Chọn ô trên biểu mẫu và ghi điều cần người lập làm rõ hoặc sửa. Ý kiến được lưu trên máy này và gửi lên khi có kết nối."
+                       Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,6" />
+            <ComboBox ItemsSource="{Binding Fields}" SelectedItem="{Binding NewNoteField}" DisplayMemberPath="Label" />
+            <TextBox Text="{Binding NewNoteText, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap"
+                     MinHeight="54" MaxHeight="200" VerticalScrollBarVisibility="Auto" Padding="6" Margin="0,6,0,0" />
+            <Button Content="Gửi ý kiến" Command="{Binding RaiseNoteCommand}" HorizontalAlignment="Left" Margin="0,6,0,0" />
+          </StackPanel>
+
           <StackPanel Visibility="{Binding SignOffs.Count, Converter={StaticResource Present}}">
             <TextBlock Text="Ký soát xét" Style="{StaticResource SectionTitle}" />
             <ItemsControl ItemsSource="{Binding SignOffs}" />
+          </StackPanel>
+
+          <!-- Sign-off needs the master and a fresh code from the authenticator app; it is never queued offline. -->
+          <StackPanel Visibility="{Binding CanSignOff, Converter={StaticResource Present}}">
+            <TextBlock Text="{Binding SignOffTitle}" Style="{StaticResource SectionTitle}" />
+            <TextBlock Text="{Binding SignOffBlocker}" Foreground="#9A5B00" TextWrapping="Wrap" Margin="0,0,0,6"
+                       Visibility="{Binding SignOffBlocker, Converter={StaticResource Present}}" />
+            <TextBlock Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,6"
+                       Text="Chữ ký đóng dấu đúng nội dung đang hiển thị trên máy này và cần kết nối máy chủ. Nhập mã 6 chữ số hiện tại của ứng dụng xác thực." />
+            <StackPanel Orientation="Horizontal">
+              <TextBox Text="{Binding SignOffCode, UpdateSourceTrigger=PropertyChanged}" Width="120" MaxLength="7" FontSize="16" Padding="6"
+                       VerticalAlignment="Center" />
+              <Button Content="Ký" Command="{Binding SignOffCommand}" Margin="10,0,0,0" Padding="22,6" />
+            </StackPanel>
+            <TextBlock Text="{Binding SignOffMessage}" Style="{StaticResource Muted}" Margin="0,6,0,0"
+                       Visibility="{Binding SignOffMessage, Converter={StaticResource Present}}" />
           </StackPanel>
 
           <Button Content="Gửi soát xét" Command="{Binding SubmitCommand}" HorizontalAlignment="Left" Margin="0,16,0,0"

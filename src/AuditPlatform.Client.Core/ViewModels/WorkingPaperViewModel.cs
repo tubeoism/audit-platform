@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using AuditPlatform.Client.Core.Auth;
 using AuditPlatform.Client.Core.Directory;
 using AuditPlatform.Client.Core.Evidence;
 using AuditPlatform.Client.Core.LocalStore;
@@ -64,6 +65,45 @@ public sealed record ConflictViewModel(
 
 public sealed record AttentionViewModel(Guid ChangeId, string Text);
 
+/// <summary>
+/// One review note with the replies to it. Kept as one instance per note, so that a reply being typed is not lost when
+/// the form reloads after a sync.
+/// </summary>
+public sealed partial class NoteViewModel(Guid id, string fieldKey) : ObservableObject
+{
+    public Guid Id { get; } = id;
+    public string FieldKey { get; } = fieldKey;
+
+    [ObservableProperty]
+    private string _fieldLabel = "";
+
+    [ObservableProperty]
+    private string _text = "";
+
+    [ObservableProperty]
+    private string _raisedBy = "";
+
+    [ObservableProperty]
+    private IReadOnlyList<string> _responses = [];
+
+    [ObservableProperty]
+    private string _stateText = "";
+
+    [ObservableProperty]
+    private bool _isOpen;
+
+    /// <summary>The preparer side: answer a note that is still open.</summary>
+    [ObservableProperty]
+    private bool _canRespond;
+
+    /// <summary>The reviewer side: accept the answer and close the note. Only the reviewer who raised it can.</summary>
+    [ObservableProperty]
+    private bool _canClear;
+
+    [ObservableProperty]
+    private string _responseText = "";
+}
+
 /// <summary>One evidence file linked to the paper. <see cref="Detail"/> says where the file is: here, on the way, or at the master only.</summary>
 public sealed record EvidenceItemViewModel(string Hash, string FileName, string Detail, bool NeedsAttention)
 {
@@ -83,11 +123,15 @@ public sealed partial class WorkingPaperViewModel : ObservableObject
     private readonly CurrentUser _user;
     private readonly Guid _engagementId;
     private readonly LocalEvidence _evidence;
+    private readonly AuthSession _session;
+    private EngagementRole? _signOffLevel;
 
     public WorkingPaperViewModel(
-        LocalUnitFactory units, SyncLoop loop, ClientOptions options, CurrentUser user, Guid engagementId, Guid documentId, LocalEvidence evidence)
+        LocalUnitFactory units, SyncLoop loop, ClientOptions options, CurrentUser user, Guid engagementId, Guid documentId, LocalEvidence evidence,
+        AuthSession session)
     {
         _evidence = evidence;
+        _session = session;
         _units = units;
         _loop = loop;
         _options = options;
@@ -104,6 +148,7 @@ public sealed partial class WorkingPaperViewModel : ObservableObject
     public ObservableCollection<ConflictViewModel> Conflicts { get; } = [];
     public ObservableCollection<AttentionViewModel> Attention { get; } = [];
     public ObservableCollection<string> SignOffs { get; } = [];
+    public ObservableCollection<NoteViewModel> Notes { get; } = [];
 
     [ObservableProperty]
     private string _title = "";
@@ -135,6 +180,43 @@ public sealed partial class WorkingPaperViewModel : ObservableObject
 
     [ObservableProperty]
     private bool _hasAttention;
+
+    // ----- Review notes: raised by a reviewer, answered by the preparer, closed by the reviewer who raised them.
+
+    [ObservableProperty]
+    private bool _canRaiseNote;
+
+    [ObservableProperty]
+    private FieldViewModel? _newNoteField;
+
+    [ObservableProperty]
+    private string _newNoteText = "";
+
+    [ObservableProperty]
+    private string _notesSummary = "";
+
+    // ----- Sign-off: an online step for a reviewer, with a fresh authenticator code.
+
+    /// <summary>True when this user holds the review level that is next in line for this paper.</summary>
+    [ObservableProperty]
+    private bool _canSignOff;
+
+    [ObservableProperty]
+    private string _signOffTitle = "";
+
+    /// <summary>Why the paper cannot be signed off yet, in words; null when it can.</summary>
+    [ObservableProperty]
+    private string? _signOffBlocker;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SignOffCommand))]
+    private bool _signOffReady;
+
+    [ObservableProperty]
+    private string _signOffCode = "";
+
+    [ObservableProperty]
+    private string? _signOffMessage;
 
     public async Task ReloadAsync(CancellationToken cancellationToken)
     {
@@ -216,9 +298,196 @@ public sealed partial class WorkingPaperViewModel : ObservableObject
                 : $" ({a.Op.Name})")}. Lý do: {a.Reason}")));
         HasAttention = Attention.Count > 0;
 
+        ShowNotes(view, doc, specs, roles, writable, Name);
+        ShowSignOffState(view, doc, roles, writable);
+
         Replace(SignOffs, doc.SignOffs.Select(s =>
             $"{(s.Level == EngagementRole.ManagerQa ? "Cấp 1 (Manager QA)" : "Cấp 2 (Japan Desk)")} · {Name(s.SignedBy)}"
             + (s.IsBroken ? " · ĐÃ MẤT HIỆU LỰC do nội dung thay đổi sau khi ký" : " · còn hiệu lực")));
+    }
+
+    private void ShowNotes(
+        PaperView view, FieldDocument doc, List<FieldSpec> specs, IReadOnlySet<EngagementRole> roles, bool writable, Func<Guid, string> name)
+    {
+        var labels = specs.ToDictionary(s => s.Key, s => s.Label);
+        var order = specs.Select((s, i) => (s.Key, i)).ToDictionary(x => x.Key, x => x.i);
+        var canEdit = writable && FieldPolicy.CanEdit(roles);
+        var canReview = writable && FieldPolicy.CanReview(roles);
+        var responsesOf = view.PendingResponses.ToLookup(r => r.NoteId);
+
+        var rows = new List<(Guid Id, string Key, string Text, Guid By, List<string> Replies, bool Cleared, bool Unsent, bool Confirmed, bool ClearUnsent)>();
+        foreach (var note in doc.Notes.Values)
+        {
+            var replies = note.Responses.Select(r => $"{name(r.Author)}: {r.Text}").ToList();
+            replies.AddRange(responsesOf[note.Id].Select(r => $"{name(r.Author)}: {r.Text} (chưa gửi lên máy chủ)"));
+            rows.Add((note.Id, note.FieldKey, note.Text, note.RaisedBy, replies, note.IsCleared, false, note.Responses.Count > 0, view.PendingClears.Contains(note.Id)));
+        }
+
+        foreach (var note in view.PendingNotes.Where(n => !doc.Notes.ContainsKey(n.NoteId)))
+        {
+            var replies = responsesOf[note.NoteId].Select(r => $"{name(r.Author)}: {r.Text} (chưa gửi lên máy chủ)").ToList();
+            rows.Add((note.NoteId, note.FieldKey, note.Text, note.Author, replies, false, true, false, false));
+        }
+
+        // Open notes first, then by the order of the boxes on the form.
+        var ordered = rows.OrderBy(r => r.Cleared).ThenBy(r => order.GetValueOrDefault(r.Key, int.MaxValue)).ThenBy(r => r.Id).ToList();
+        var next = new List<NoteViewModel>();
+        foreach (var row in ordered)
+        {
+            var note = Notes.FirstOrDefault(n => n.Id == row.Id) ?? new NoteViewModel(row.Id, row.Key);
+            note.FieldLabel = labels.GetValueOrDefault(row.Key, row.Key);
+            note.Text = row.Text;
+            note.RaisedBy = $"Ý kiến của {name(row.By)}";
+            note.Responses = row.Replies;
+            note.IsOpen = !row.Cleared;
+            note.StateText = row.Cleared ? "Đã xử lý xong"
+                : row.Unsent ? "Chưa gửi lên máy chủ"
+                : row.ClearUnsent ? "Xác nhận xử lý xong đang chờ gửi lên máy chủ"
+                : row.Replies.Count == 0 ? "Chờ người lập trả lời"
+                : "Đã có trả lời; chờ người nêu ý kiến xác nhận";
+            note.CanRespond = canEdit && !row.Cleared && !row.Unsent;
+            note.CanClear = canReview && !row.Cleared && !row.ClearUnsent && row.By == _user.Id && row.Confirmed;
+            next.Add(note);
+        }
+
+        if (!Notes.SequenceEqual(next))
+        {
+            Notes.Clear();
+            foreach (var note in next)
+            {
+                Notes.Add(note);
+            }
+        }
+
+        var open = ordered.Count(r => !r.Cleared);
+        NotesSummary = ordered.Count == 0 ? "" : open == 0 ? $"Tất cả {ordered.Count} ý kiến đã xử lý xong." : $"Còn {open} ý kiến chưa xử lý xong trên {ordered.Count}.";
+        CanRaiseNote = canReview && view.Exists && !view.IsLocalOnly;
+        if (NewNoteField is null || !Fields.Contains(NewNoteField))
+        {
+            NewNoteField = Fields.FirstOrDefault();
+        }
+    }
+
+    /// <summary>
+    /// The next review level this user can sign, and what stands in the way. The same rule the master applies, so the
+    /// button is offered only when the master is likely to accept it; the master still decides.
+    /// </summary>
+    private void ShowSignOffState(PaperView view, FieldDocument doc, IReadOnlySet<EngagementRole> roles, bool writable)
+    {
+        _signOffLevel = view.Status switch
+        {
+            WorkingPaperStatus.ReadyForReview when roles.Contains(EngagementRole.ManagerQa) => EngagementRole.ManagerQa,
+            WorkingPaperStatus.ManagerQaSignedOff when roles.Contains(EngagementRole.JapanDesk) => EngagementRole.JapanDesk,
+            _ => null,
+        };
+        CanSignOff = writable && _signOffLevel is not null && view.Exists && !view.IsLocalOnly;
+        SignOffTitle = _signOffLevel switch
+        {
+            EngagementRole.ManagerQa => "Ký soát xét cấp 1 (Manager QA)",
+            EngagementRole.JapanDesk => "Ký soát xét cấp 2 (Japan Desk)",
+            _ => "",
+        };
+        var openNotes = doc.Notes.Values.Count(n => !n.IsCleared);
+        SignOffBlocker = !CanSignOff ? null
+            : doc.PreparerId == _user.Id ? "Người lập không được ký soát xét giấy làm việc của chính mình."
+            : openNotes > 0 ? $"Còn {openNotes} ý kiến chưa xử lý xong; cần xử lý hết trước khi ký."
+            : doc.OpenConflicts.Any() ? "Còn xung đột chưa được quyết định; cần xử lý hết trước khi ký."
+            : view.PendingCount > 0 ? "Máy này còn thay đổi chưa gửi lên máy chủ; hãy đồng bộ xong rồi mới ký, để chữ ký đóng dấu đúng nội dung bạn đang xem."
+            : doc.WhySignOffIsRefused(_signOffLevel!.Value.ToString(), _user.Id);
+        SignOffReady = CanSignOff && SignOffBlocker is null;
+    }
+
+    /// <summary>Raises a note on the selected box. It is queued like any other change and works offline.</summary>
+    [RelayCommand]
+    private async Task RaiseNoteAsync(CancellationToken cancellationToken)
+    {
+        if (!CanRaiseNote)
+        {
+            return;
+        }
+
+        if (NewNoteField is null || string.IsNullOrWhiteSpace(NewNoteText))
+        {
+            Error = "Chọn ô cần nêu ý kiến và nhập nội dung.";
+            return;
+        }
+
+        var key = NewNoteField.Key;
+        var text = NewNoteText.Trim();
+        await RunAsync(unit => unit.Workspace(_engagementId, _user.Id).RaiseNoteAsync(DocumentId, Guid.NewGuid(), key, text, cancellationToken), cancellationToken);
+        if (Error is null)
+        {
+            NewNoteText = "";
+        }
+    }
+
+    /// <summary>The preparer answers a note. Answers are added, never replaced; the reviewer decides when the note is done.</summary>
+    [RelayCommand]
+    private async Task RespondAsync(NoteViewModel? note, CancellationToken cancellationToken)
+    {
+        if (note is not { CanRespond: true })
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(note.ResponseText))
+        {
+            Error = "Nhập nội dung trả lời.";
+            return;
+        }
+
+        var text = note.ResponseText.Trim();
+        await RunAsync(unit => unit.Workspace(_engagementId, _user.Id).RespondAsync(DocumentId, note.Id, text, cancellationToken), cancellationToken);
+        if (Error is null)
+        {
+            note.ResponseText = "";
+        }
+    }
+
+    /// <summary>The reviewer who raised a note closes it, on the latest answer they have read.</summary>
+    [RelayCommand]
+    private Task ClearNoteAsync(NoteViewModel? note, CancellationToken cancellationToken) =>
+        note is not { CanClear: true } ? Task.CompletedTask
+            : RunAsync(unit => unit.Workspace(_engagementId, _user.Id).ClearNoteAsync(DocumentId, note.Id, cancellationToken), cancellationToken);
+
+    /// <summary>
+    /// Signs the paper off at the next review level. Needs the master and a fresh authenticator code: the code buys a
+    /// single-use grant for exactly the content shown on this laptop, so what is sealed is what the reviewer saw.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(SignOffReady))]
+    private async Task SignOffAsync(CancellationToken cancellationToken)
+    {
+        Error = null;
+        SignOffMessage = null;
+        if (_signOffLevel is not { } level || !SignOffReady)
+        {
+            return;
+        }
+
+        var code = new string(SignOffCode.Where(char.IsAsciiDigit).ToArray());
+        if (code.Length != 6)
+        {
+            Error = "Nhập mã 6 chữ số hiện trên ứng dụng xác thực.";
+            return;
+        }
+
+        string hash;
+        await using (var unit = await _units.OpenAsync(cancellationToken))
+        {
+            hash = (await unit.Workspace(_engagementId, _user.Id).ConfirmedAsync(DocumentId, cancellationToken)).ComputeContentHash();
+        }
+
+        var result = await _session.SignOffAsync(_engagementId, DocumentId, level.ToString(), hash, code, cancellationToken);
+        if (result.Value is null)
+        {
+            Error = result.Error?.Message ?? "Máy chủ không nhận chữ ký.";
+            return;
+        }
+
+        SignOffCode = "";
+        SignOffMessage = "Đã ký. Đang đồng bộ trạng thái mới từ máy chủ.";
+        _loop.Poke();
+        await ReloadAsync(cancellationToken);
     }
 
     /// <summary>Saves one box if its text changed. Called when the box loses focus.</summary>

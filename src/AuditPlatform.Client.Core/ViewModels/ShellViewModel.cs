@@ -138,7 +138,7 @@ public sealed partial class ShellViewModel : ObservableObject
             return;
         }
 
-        Engagement = value is null || _user is null ? null : new EngagementViewModel(_units, _loop, _options, _user, value.Id, _evidence);
+        Engagement = value is null || _user is null ? null : new EngagementViewModel(_units, _loop, _options, _user, value.Id, _evidence, _session);
         _ = Engagement?.ReloadAsync(CancellationToken.None);
     }
 

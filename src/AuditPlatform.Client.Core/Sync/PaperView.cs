@@ -7,6 +7,12 @@ namespace AuditPlatform.Client.Core.Sync;
 /// <summary>A change of this user that the master flagged or refused, readable by a form.</summary>
 public sealed record AttentionItem(Guid ChangeId, OutboxState State, FieldOp Op, string? Reason);
 
+/// <summary>A review note raised on this laptop that the master has not confirmed yet.</summary>
+public sealed record PendingNote(Guid NoteId, Guid Author, string FieldKey, string Text);
+
+/// <summary>A response written on this laptop that the master has not confirmed yet.</summary>
+public sealed record PendingResponse(Guid NoteId, Guid Author, string Text);
+
 /// <summary>
 /// One working paper for display: the confirmed replica with the user's unsent changes laid over it. Only
 /// <see cref="Confirmed"/> is fact; everything else is this laptop's expectation until the master answers.
@@ -45,6 +51,13 @@ public sealed class PaperView
 
     public IReadOnlyList<AttentionItem> Attention { get; private set; } = [];
 
+    /// <summary>Notes raised, responses written and notes cleared on this laptop and not yet confirmed by the master.</summary>
+    public IReadOnlyList<PendingNote> PendingNotes { get; private set; } = [];
+
+    public IReadOnlyList<PendingResponse> PendingResponses { get; private set; } = [];
+
+    public IReadOnlySet<Guid> PendingClears { get; private set; } = new HashSet<Guid>();
+
     /// <summary>The value to show in a field: the user's unsent text if there is one, otherwise the confirmed value.</summary>
     public string Value(string key) => PendingValues.TryGetValue(key, out var mine) ? mine : Confirmed.Value(key) ?? "";
 
@@ -61,6 +74,9 @@ public sealed class PaperView
         var attention = new List<AttentionItem>();
         var evidence = new SortedSet<string>(confirmed.Evidence, StringComparer.Ordinal);
         var pendingEvidence = new HashSet<string>(StringComparer.Ordinal);
+        var pendingNotes = new List<PendingNote>();
+        var pendingResponses = new List<PendingResponse>();
+        var pendingClears = new HashSet<Guid>();
         foreach (var row in outbox)
         {
             FieldOp op;
@@ -102,6 +118,15 @@ public sealed class PaperView
                 case SubmitForReview when view.Status == WorkingPaperStatus.Draft:
                     view.Status = WorkingPaperStatus.ReadyForReview;
                     break;
+                case RaiseNote raise:
+                    pendingNotes.Add(new PendingNote(raise.NoteId, row.AuthorUserId, raise.FieldKey, raise.Text));
+                    break;
+                case RespondNote respond:
+                    pendingResponses.Add(new PendingResponse(respond.NoteId, row.AuthorUserId, respond.Response));
+                    break;
+                case ClearNote clear:
+                    pendingClears.Add(clear.NoteId);
+                    break;
             }
         }
 
@@ -109,6 +134,9 @@ public sealed class PaperView
         view.Attention = attention;
         view.Evidence = [.. evidence];
         view.PendingEvidence = pendingEvidence;
+        view.PendingNotes = pendingNotes;
+        view.PendingResponses = pendingResponses;
+        view.PendingClears = pendingClears;
         return view;
     }
 }
