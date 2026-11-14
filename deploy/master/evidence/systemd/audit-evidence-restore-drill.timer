@@ -1,0 +1,9 @@
+[Unit]
+Description=Monthly evidence restore drill, 03:30 Asia/Ho_Chi_Minh on the 2nd
+
+[Timer]
+OnCalendar=*-*-02 20:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

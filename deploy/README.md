@@ -13,6 +13,7 @@ The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://ap
 | `master/auth-key.sh` | Installed as `/usr/local/sbin/audit-auth-key`. Generates, shows (for the offline copy), fingerprints and re-installs `Auth__MasterKey`, the root of the authentication keys (ADR-0005) |
 | `master/audit-admin.sh` | Installed as `/usr/local/sbin/audit-admin`. Account administration from the console as the `audit` user: `invite`, `list`, `disable`/`enable`, `role`, `reset-mfa`, `devices`, `revoke`; engagements and the methodology library: `engagement create|member|unmember|list`, `templates import|list` (see the root README). Each action is in the audit log with the sudo user's name |
 | `master/backup/` | WAL-G continuous archiving and nightly base backups of PostgreSQL to R2 `audit-live`, hourly health check with e-mail alerts, monthly immutable copy to `audit-archive`, monthly restore drill. Setup: `sudo bash backup/backup-setup.sh [--enable]`. Runbook: [`master/backup/RESTORE.md`](master/backup/RESTORE.md) |
+| `master/evidence/` | Encrypted off-site mirror of `/srv/audit/evidence` to R2 `audit-live/evidence` with rclone crypt: copy every 10 minutes (never deletes), hourly completeness check with e-mail alerts, monthly restore drill. Setup: `sudo bash evidence/evidence-setup.sh [--enable]`. Integrity of the store: `sudo audit-admin evidence verify`. Runbook: the evidence section of [`master/backup/RESTORE.md`](master/backup/RESTORE.md) |
 | `master/r2-lock-test.sh` | Installed as `/usr/local/sbin/audit-r2-lock-test`. Writes a marker under `audit-archive/archive/` and checks that deleting it returns HTTP 409 |
 
 ## Layout on the VM
@@ -43,6 +44,8 @@ The master runs on one Ubuntu 24.04 aarch64 VM behind Caddy (TLS) at `https://ap
 6. Run **Deploy master** from the Actions tab, approve, then run `sudo bash r2-lock-test.sh` and expect `PASS`.
 7. Backups: `sudo bash backup/backup-setup.sh --enable` (restarts PostgreSQL once), store the key offline with `sudo audit-walg-key --show`, then run `sudo audit-pg-restore-drill` and expect `RESULT: PASS`.
 
+7a. Evidence mirror: `sudo bash evidence/evidence-setup.sh`, store the key offline with `sudo audit-evidence-key --show` (next to the backup key), then `sudo bash evidence/evidence-setup.sh --enable`. Needs the alert mail from step 7.
+
 8. Authentication: `sudo audit-auth-key --init`, then `sudo audit-auth-key --show` and store the key offline next to the backup key. Invite the first administrator with `sudo audit-admin invite <email> "<name>" --admin`; they finish in the browser from the e-mailed link. Invite a second administrator the same way.
 
 ### Adding authentication to a VM bootstrapped before ADR-0005
@@ -66,4 +69,5 @@ Until `--init` has run, the new release starts normally but answers 503 on every
 - Roll back: `ssh deploy@<vm> sudo /usr/local/sbin/audit-activate-release --rollback`
 - Logs: `journalctl -u audit-master -f`, `/var/log/caddy/audit-master.log`
 
+- Evidence mirror: `sudo audit-evidence-mirror-check`; integrity of the store: `sudo audit-admin evidence verify`.
 - Backups: `sudo audit-pg-backup-check`; restore procedures in [`master/backup/RESTORE.md`](master/backup/RESTORE.md).

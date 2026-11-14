@@ -1,0 +1,13 @@
+[Unit]
+Description=Copy new evidence objects to the encrypted mirror on R2
+After=network-online.target
+Wants=network-online.target
+OnFailure=audit-backup-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/audit-evidence-mirror
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=6h

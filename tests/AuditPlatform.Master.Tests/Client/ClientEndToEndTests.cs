@@ -517,6 +517,38 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
         await deskBinh.SyncAsync();
         Assert.Equal(sheet.Hash, Assert.Single(deskBinh.Paper.Evidence).Hash);
         Assert.Equal(2, (await deskAn.Files.ListAsync(engagement, Ct))!.Count);
+
+        // ----- The console re-hashes the whole store: clean now; a file altered or lost on the volume is named.
+        var (exit, report) = await RunAdminAsync("evidence", "verify");
+        Assert.True(exit == 0, report);
+        Assert.Contains("Đã kiểm tra 2 file", report, StringComparison.Ordinal);
+        var altered = Path.Combine(factory.EvidenceRoot, sheet.Hash[..2], sheet.Hash[2..4], sheet.Hash);
+        File.SetAttributes(altered, FileAttributes.Normal);
+        await File.WriteAllTextAsync(altered, "altered on the volume", Ct);
+        var lost = (await deskAn.Files.ListAsync(engagement, Ct))!.Single(f => f.Hash != sheet.Hash).Hash;
+        var lostPath = Path.Combine(factory.EvidenceRoot, lost[..2], lost[2..4], lost);
+        File.SetAttributes(lostPath, FileAttributes.Normal);
+        File.Delete(lostPath);
+        (exit, report) = await RunAdminAsync("evidence", "verify");
+        Assert.Equal(1, exit);
+        Assert.Contains("BỊ SỬA    " + sheet.Hash, report, StringComparison.Ordinal);
+        Assert.Contains("THIẾU     " + lost, report, StringComparison.Ordinal);
+        Assert.Equal(2, (await factory.AuditAsync()).Count(a => a.Action == "evidence.verified" && a.PayloadJson.Contains("operatorName", StringComparison.Ordinal)));
+
+        // Reading a damaged file is refused and recorded, never served.
+        await using (var stolen = new MemoryStream())
+        {
+            Assert.False(await deskBinh.Files.FetchAsync(engagement, sheet.Hash, stolen, Ct));
+        }
+
+        Assert.Contains(await factory.AuditAsync(), a => a.Action == "evidence.damaged" && a.EntityId == sheet.Hash);
+    }
+
+    private async Task<(int Exit, string Output)> RunAdminAsync(params string[] args)
+    {
+        using var output = new StringWriter();
+        var exit = await AdminCli.RunAsync(factory.Services, args, output, new StringReader(""));
+        return (exit, output.ToString());
     }
 
     private static async Task<(EvidenceSend Outcome, string? Reason)> SendAsync(Desk desk, Guid engagement, string hash, Stream content)

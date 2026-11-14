@@ -166,11 +166,16 @@ Limits and choices of this slice:
   would add a field to a signed operation and is left for a decision.
 - The intake record holds the uploader, the time and the file name. Where the file came from (who handed it over, when,
   in what form) is not asked yet.
-- The master's evidence directory is on the VM's block volume only. The mirror to R2 named in ADR-0003 does not exist
-  yet; until it does, the evidence store has no off-site copy.
+- Off-site copy (added 2026-11-14, `deploy/master/evidence/`): every 10 minutes new objects are copied to
+  `audit-live/evidence/` on R2, encrypted on the VM with rclone crypt under a key kept offline, copy-only (nothing is
+  deleted from R2 when it disappears locally). An hourly check alerts on a stale or incomplete mirror and a monthly drill
+  reads a sample back and compares it byte for byte. `audit-admin evidence verify` re-hashes the whole store. Until the
+  setup has been run on the VM and the key stored offline, the store still has no off-site copy. Not covered: the mirror
+  is at most about 10 minutes behind, `audit-live` has no object lock (a leaked R2 token could delete the copy), and
+  packaging closed engagements into `audit-archive` is not built.
 
 ## Open after the second client slice
-1. Off-site copy of the evidence store (R2 mirror, encrypted), and its restore drill.
+1. Run the evidence mirror setup on the VM and store its key offline; later, package closed engagements into the locked `audit-archive`.
 2. Review notes and sign-off screens (the engine and the API exist); in-app notice of a broken seal beyond the status line.
 3. API and screen to lock an engagement; the engine and the client honour the status as soon as one does.
 4. Rebuild procedure for a replica that diverged or is ahead of a restored master (the loop stops and reports it).

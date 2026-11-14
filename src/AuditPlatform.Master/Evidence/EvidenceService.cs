@@ -24,6 +24,15 @@ public enum EvidenceOutcome
 
 public sealed record EvidenceResult(EvidenceOutcome Outcome, string? Reason = null, EvidenceInfo? Info = null);
 
+/// <param name="Checked">Objects the database lists and the store was asked for.</param>
+/// <param name="Bytes">Size of the objects that were read and matched their hash.</param>
+/// <param name="Missing">Hashes the database lists and the store does not hold.</param>
+/// <param name="Damaged">Hashes whose stored bytes no longer hash to their address.</param>
+public sealed record EvidenceVerification(int Checked, long Bytes, IReadOnlyList<string> Missing, IReadOnlyList<string> Damaged)
+{
+    public bool IsClean => Missing.Count == 0 && Damaged.Count == 0;
+}
+
 public sealed record EvidenceDownload(EvidenceOutcome Outcome, Stream? Content = null, EvidenceInfo? Info = null, string? Reason = null);
 
 /// <summary>
@@ -145,6 +154,38 @@ public sealed class EvidenceService(MasterDbContext db, IEvidenceStore store, IE
                 JsonSerializer.Serialize(new { reason = e.Message }, Json)), cancellationToken);
             return new EvidenceDownload(EvidenceOutcome.Damaged, Reason: "The stored file is missing or no longer matches its hash.");
         }
+    }
+
+    /// <summary>
+    /// Re-hashes every object the database lists and reports what is missing or altered. Run after a restore of the
+    /// volume or of the mirror, and now and then on the live store; the result is written to the audit log.
+    /// </summary>
+    public async Task<EvidenceVerification> VerifyAllAsync(string operatorName, CancellationToken cancellationToken)
+    {
+        var listed = await db.EvidenceObjects.AsNoTracking().OrderBy(o => o.Hash).Select(o => new { o.Hash, o.SizeBytes }).ToListAsync(cancellationToken);
+        List<string> missing = [], damaged = [];
+        long bytes = 0;
+        foreach (var item in listed)
+        {
+            try
+            {
+                await using var stream = await store.OpenVerifiedAsync(item.Hash, cancellationToken);
+                bytes += stream.Length;
+            }
+            catch (EvidenceIntegrityException)
+            {
+                damaged.Add(item.Hash);
+            }
+            catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+            {
+                missing.Add(item.Hash);
+            }
+        }
+
+        var result = new EvidenceVerification(listed.Count, bytes, missing, damaged);
+        await auditLog.AppendAsync(new AuditEvent(clock.GetUtcNow(), Guid.Empty, "evidence.verified", "evidence", "store", null,
+            JsonSerializer.Serialize(new { operatorName, checkedObjects = result.Checked, bytes, missing, damaged, clean = result.IsClean }, Json)), cancellationToken);
+        return result;
     }
 
     private async Task<EvidenceInfo?> FirstIntakeAsync(Guid engagementId, string hash, CancellationToken cancellationToken) =>

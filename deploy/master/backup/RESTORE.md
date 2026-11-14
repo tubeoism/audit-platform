@@ -89,9 +89,49 @@ Cần có: khoá giải mã (bản ngoại tuyến), quyền vào Cloudflare (R2
 | Bản full quá 26 giờ | `journalctl -u audit-pg-backup -n 100` | Chạy lại `sudo systemctl start audit-pg-backup` |
 | Diễn tập FAIL | Mail báo cáo và `journalctl -u audit-pg-restore-drill` | Coi như sự cố: chưa chứng minh được khả năng khôi phục. Xử lý trong ngày |
 
+## Kho bằng chứng (`/srv/audit/evidence`)
+
+Bằng chứng không nằm trong PostgreSQL nên WAL-G không sao lưu chúng. Chúng có bản sao riêng:
+
+| Mục | Giá trị |
+|---|---|
+| Công cụ | rclone v1.76.0 (`/usr/local/bin/rclone`), thiết lập bằng `sudo bash evidence/evidence-setup.sh [--enable]` |
+| Nơi lưu | `s3://audit-live/evidence/` (mỗi file một đối tượng cùng tên với mã băm, thêm đuôi `.bin`) |
+| Mã hoá | rclone crypt phía client, khoá ở `/etc/audit-evidence/crypt.key` (root:audit 0640), **khác khoá backup PostgreSQL**. Tên file không mã hoá (chỉ là mã băm), nội dung thì có. R2 chỉ thấy dữ liệu đã mã hoá |
+| Chép | `audit-evidence-mirror.timer` mỗi 10 phút, chỉ `rclone copy`: không bao giờ xoá trên R2 vì file biến mất ở VM. `--immutable`: file cùng tên mà khác kích thước là lỗi chứ không ghi đè |
+| Cảnh báo | `audit-evidence-mirror-check` mỗi giờ: báo khi lần chép cuối quá 2 giờ, hoặc có file trên VM (cũ hơn 30 phút) mà R2 thiếu hay khác kích thước |
+| Diễn tập | `audit-evidence-restore-drill` ngày 02 hằng tháng: tải 20 file ngẫu nhiên từ R2, giải mã, so từng byte với bản trên VM, gửi PASS/FAIL qua mail |
+| Kiểm tra toàn vẹn | `sudo audit-admin evidence verify` băm lại mọi file mà CSDL liệt kê, báo file THIẾU hoặc BỊ SỬA, ghi audit log (`evidence.verified`) |
+
+> **Khoá bằng chứng là điểm sống còn thứ hai.** Chạy `sudo audit-evidence-key --show` một lần, cất cạnh khoá backup, ghi fingerprint (`--fingerprint`). Mất khoá thì bản sao trên R2 không đọc được.
+
+Giới hạn cần biết: bản sao này chạy mỗi 10 phút, nên file vừa tải lên có thể chưa có trên R2 trong tối đa khoảng 10 phút; và R2 `audit-live` chưa có object lock, nên token R2 bị lộ có thể xoá bản sao. Việc đóng gói engagement đã kết thúc sang `audit-archive` (bất biến 10 năm) chưa làm.
+
+### Kịch bản D: mất hoặc hỏng file bằng chứng trên VM
+
+1. Xác định phạm vi: `sudo audit-admin evidence verify` (liệt kê THIẾU và BỊ SỬA).
+2. Khôi phục từ R2 chỉ những file đó (hoặc cả kho nếu mất đĩa). `audit-evidence-restore-drill` và `evidence-mirror` dùng cùng cấu hình; trên VM đang chạy:
+   ```bash
+   H=<mã băm 64 ký tự>
+   sudo install -d -o audit -g audit -m 0750 /srv/audit/evidence/${H:0:2}/${H:2:2}
+   sudo -u audit rclone copyto evidence:${H:0:2}/${H:2:2}/$H /srv/audit/evidence/${H:0:2}/${H:2:2}/$H --config /etc/audit-evidence/rclone.conf
+   sudo chmod 0444 /srv/audit/evidence/${H:0:2}/${H:2:2}/$H
+   ```
+   File bị sửa thì xoá bản hỏng trước (`sudo chattr -i`/`chmod u+w` nếu cần). Cả kho: `sudo -u audit rclone copy evidence: /srv/audit/evidence --config /etc/audit-evidence/rclone.conf --transfers 4`.
+3. Chạy lại `sudo audit-admin evidence verify` và mong thấy `OK`. File nào vẫn THIẾU thì không còn bản sao nào: ghi biên bản, báo người phụ trách engagement để lấy lại bản gốc từ khách hàng.
+4. Dựng lại VM từ đầu: sau kịch bản B, `sudo audit-evidence-key --install` (khoá ngoại tuyến), `sudo bash evidence/evidence-setup.sh` (không `--enable`), khôi phục cả kho như trên, `verify`, rồi mới `--enable`.
+
+### Cảnh báo của bản sao bằng chứng
+
+| Cảnh báo | Kiểm tra | Xử lý thường gặp |
+|---|---|---|
+| Lần chép cuối quá 2 giờ | `journalctl -u audit-evidence-mirror -n 100` | R2 token hết hạn: `sudo audit-set-secrets` rồi `sudo audit-evidence-config`. Mạng lỗi thì đợi |
+| File trên VM mà R2 thiếu hoặc khác kích thước | `sudo audit-evidence-mirror-check` | Chạy `sudo systemctl start audit-evidence-mirror`. Nếu lỗi `immutable`/khác kích thước: một phía đã hỏng, chạy `audit-admin evidence verify` để biết phía nào, rồi khôi phục theo kịch bản D |
+| Diễn tập FAIL | Mail báo cáo, `journalctl -u audit-evidence-restore-drill` | Coi như sự cố: chưa chứng minh được khả năng khôi phục bằng chứng. Xử lý trong ngày |
+
 ## Thay khoá hoặc token
 
-- **R2 token mới**: `sudo audit-set-secrets` (lệnh này gọi `audit-walg-config`). Kiểm lại bằng `sudo audit-pg-backup-check`.
+- **R2 token mới**: `sudo audit-set-secrets` (lệnh này gọi `audit-walg-config`), rồi `sudo audit-evidence-config` cho bản sao bằng chứng. Kiểm lại bằng `sudo audit-pg-backup-check` và `sudo audit-evidence-mirror-check`.
 - **Khoá mã hoá**: không thay tại chỗ, vì bản cũ chỉ đọc được bằng khoá cũ. Nếu bắt buộc phải thay, đổi sang prefix mới (`LIVE_PREFIX=... audit-walg-config`), chụp bản full mới và giữ khoá cũ cho tới khi bản cũ hết hạn giữ (30 ngày, còn với archive là theo lock).
 
 ## Nhật ký diễn tập
