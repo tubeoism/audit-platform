@@ -20,7 +20,9 @@ Order matters: `Archived` has to mean "a verified copy exists in the immutable a
 the master itself built and recorded in step 1 (`engagement.archive.packaged`, with both digests); invented or mistyped
 digests are refused and logged.
 
-The output must be under `/srv/audit`: `audit-admin` runs in a sandbox that can write nowhere else.
+The output must be under `/srv/audit`, in a folder the `audit` user can write: `audit-admin` runs as that user in a
+sandbox that can write nowhere else, and it does not create folders. Create one first:
+`sudo install -d -o audit -g audit -m 0750 /srv/audit/archive-staging`.
 
 ## What is checked before a byte is written
 
@@ -40,8 +42,11 @@ same pass produces the SHA-256 of the whole tar. A package that exists on disk i
 
 ## The package
 
-One POSIX tar (`engagement-<engagement id>/` as the only top-level folder). The same data and the same lock time give
-the same bytes except `manifest.json`, which records when it was generated.
+One POSIX tar (`engagement-<engagement id>/` as the only top-level folder). Packaging is deterministic for a given set
+of inputs (sorted entries, fixed owners, modes and times), but not repeatable: every attempt is itself on the audit log,
+and `audit-log.jsonl` holds the entries about the engagement, so a second package differs from the first (and
+`manifest.json` records when it was generated). The package digest names one package, not one engagement; do not read a
+different digest between two runs as corruption.
 
 | File | Content |
 |---|---|
@@ -56,6 +61,8 @@ the same bytes except `manifest.json`, which records when it was generated.
 | `SHA256SUMS` | SHA-256 of every other file; its own SHA-256 is the **package digest** |
 
 Anyone can check a package with `tar -xf package.tar && sha256sum -c engagement-*/SHA256SUMS`, with no software of ours.
+(The same command is in `README.txt` inside every package.) Evidence files are at most `Master:MaxEvidenceBytes` (95 MiB), so
+the 8 GiB limit of one tar entry is not reached.
 The audit-log lines keep their hash chain fields, but the entries of other engagements between them are not included, so
 the chain cannot be re-walked from the package alone; the manifest records the global chain head at packaging time.
 

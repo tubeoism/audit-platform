@@ -147,6 +147,9 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
             await using (var file = new FileStream(part, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 1 << 16, FileOptions.Asynchronous))
             {
                 written = await ArchiveTar.WriteAsync(file, root, entries, engagement.LockedAt ?? now, cancellationToken);
+
+                // To disk, not only to the cache: the package is about to be vouched for, and read back below.
+                file.Flush(flushToDisk: true);
                 file.Position = 0;
                 checkedFile = await ArchiveTar.VerifyAsync(file, cancellationToken);
             }
@@ -154,7 +157,8 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
             File.Move(part, path);
             finished = true;
         }
-        catch (Exception e) when (e is ArchiveIntegrityException or EvidenceIntegrityException or FileNotFoundException or DirectoryNotFoundException or IOException)
+        catch (Exception e) when (e is ArchiveIntegrityException or EvidenceIntegrityException or IOException or UnauthorizedAccessException
+            or InvalidDataException or ArgumentException or NotSupportedException or JsonException)
         {
             await WriteAuditAsync(actor, "engagement.archive.refused", engagement, new { failed = e.Message }, cancellationToken);
             return new AuthFailure("archive_failed", "Ghi gói lưu trữ không thành công: " + e.Message);
@@ -171,7 +175,18 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
 
         var info = new ArchivePackageInfo(id, engagement.Code, Path.GetFileName(path), checkedFile.Bytes, checkedFile.TarSha256, written.PackageDigest, lockDigest,
             papers.Count, changes.Count, audit.Count, hashes.Count, evidenceBytes);
-        await WriteAuditAsync(actor, "engagement.archive.packaged", engagement, info, cancellationToken);
+        try
+        {
+            await WriteAuditAsync(actor, "engagement.archive.packaged", engagement, info, cancellationToken);
+        }
+        catch
+        {
+            // A package without its record cannot be archived, and a file left behind would block the next run:
+            // the package can be built again, so remove it.
+            File.Delete(path);
+            throw;
+        }
+
         return info;
     }
 
@@ -298,7 +313,7 @@ public sealed class ArchivePackager(MasterDbContext db, IEvidenceStore store, IA
         Gói này là bản đầy đủ của engagement đã khoá, không cần phần mềm của chúng tôi để đọc hay kiểm tra.
         This package is the complete record of a locked engagement. You need none of our software to read or check it.
 
-        Kiểm tra / Verify:   sha256sum -c SHA256SUMS      (chạy ở thư mục chứa thư mục engagement-*, run from the folder that holds engagement-*)
+        Kiểm tra / Verify:   sha256sum -c engagement-*/SHA256SUMS      (chạy ở thư mục chứa thư mục engagement-*, run from the folder that holds engagement-*)
 
         manifest.json        Tóm tắt, digest lúc khoá, số lượng. / Summary, lock digest, counts.
         engagement.json      Thông tin engagement và thành viên. / The engagement and its members.

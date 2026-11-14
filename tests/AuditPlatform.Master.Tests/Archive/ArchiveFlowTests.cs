@@ -157,6 +157,8 @@ public sealed class ArchiveFlowTests(AuthFactory factory) : IClassFixture<AuthFa
         using var members = JsonDocument.Parse(files[$"{root}/engagement.json"]);
         Assert.Equal("EngagementManager", members.RootElement.GetProperty("members")[0].GetProperty("role").GetString());
         Assert.Contains("\"engagement.locked\"", Encoding.UTF8.GetString(files[$"{root}/audit-log.jsonl"]), StringComparison.Ordinal);
+        // The one instruction stored with the archive for years must be a command that works from the folder holding the package.
+        Assert.Contains("sha256sum -c engagement-*/SHA256SUMS", Encoding.UTF8.GetString(files[$"{root}/README.txt"]), StringComparison.Ordinal);
         Assert.Contains("xác nhận ngân hàng.pdf", Encoding.UTF8.GetString(files[$"{root}/evidence/index.json"]), StringComparison.Ordinal);
         Assert.Contains(seed.EvidenceHash, Encoding.UTF8.GetString(files[$"{root}/evidence/index.json"]), StringComparison.Ordinal);
         // The checksum list holds the real SHA-256 of the evidence, which is not its (BLAKE3) name.

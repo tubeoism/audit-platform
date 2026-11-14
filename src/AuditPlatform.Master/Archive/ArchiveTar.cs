@@ -55,9 +55,9 @@ internal static class ArchiveTar
             throw new ArgumentException("Two entries have the same path.", nameof(entries));
         }
 
-        if (ordered.Any(e => e.Path == SumsFile))
+        if (ordered.Any(e => e.Path.Split('/')[^1] == SumsFile))
         {
-            throw new ArgumentException($"{SumsFile} is written by the archive itself.", nameof(entries));
+            throw new ArgumentException($"{SumsFile} is written by the archive itself; no entry may carry that name.", nameof(entries));
         }
 
         var sums = new List<(string Hash, string Path)>();
