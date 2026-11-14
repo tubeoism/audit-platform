@@ -79,6 +79,8 @@ public sealed class AuthFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
     /// <summary>Small, so that the limit can be tested with a file of a megabyte.</summary>
     public const long MaxEvidenceBytes = 1024 * 1024;
+    public const long PartBytes = 4096;
+    public const long MaxPartedEvidenceBytes = 65536;
 
     public TestClock Clock { get; } = new();
     public FakeMail Mail { get; } = new();
@@ -122,6 +124,9 @@ public sealed class AuthFactory : WebApplicationFactory<Program>, IAsyncLifetime
         builder.UseSetting("Master:RunNotificationDispatcher", "false");
         builder.UseSetting("Master:EvidenceRoot", _evidenceRoot);
         builder.UseSetting("Master:MaxEvidenceBytes", MaxEvidenceBytes.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        // Tiny parts, so that a test can send a file in parts without moving megabytes.
+        builder.UseSetting("Master:EvidencePartBytes", PartBytes.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        builder.UseSetting("Master:MaxPartedEvidenceBytes", MaxPartedEvidenceBytes.ToString(System.Globalization.CultureInfo.InvariantCulture));
         builder.ConfigureTestServices(services =>
         {
             services.RemoveAll<TimeProvider>();

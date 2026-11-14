@@ -11,6 +11,12 @@ public sealed class MasterOptions
     /// Largest evidence file accepted, in bytes. The default stays under the 100 MB request limit of the Cloudflare
     /// proxy in front of the master; a larger file needs an upload in parts, which does not exist yet.
     /// </summary>
+    /// <summary>Size of the parts a large evidence file is sent in; below the request limit of the proxy in front of the master.</summary>
+    public long EvidencePartBytes { get; set; } = AuditPlatform.Contracts.Evidence.EvidenceRoutes.DefaultPartBytes;
+
+    /// <summary>Largest evidence file taken in parts.</summary>
+    public long MaxPartedEvidenceBytes { get; set; } = AuditPlatform.Contracts.Evidence.EvidenceRoutes.DefaultMaxPartedBytes;
+
     public long MaxEvidenceBytes { get; set; } = AuditPlatform.Contracts.Evidence.EvidenceRoutes.DefaultMaxBytes;
 
     /// <summary>Upper bound on changes returned by one pull.</summary>

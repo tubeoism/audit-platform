@@ -20,6 +20,12 @@ public enum EvidenceOutcome
     HashMismatch = 4,
     NotFound = 5,
     Damaged = 6,
+
+    /// <summary>The request itself is wrong (a part number or size that does not fit the file).</summary>
+    BadRequest = 7,
+
+    /// <summary>A parted upload is completed before every part has arrived.</summary>
+    Incomplete = 8,
 }
 
 public sealed record EvidenceResult(EvidenceOutcome Outcome, string? Reason = null, EvidenceInfo? Info = null);
@@ -52,20 +58,9 @@ public sealed class EvidenceService(MasterDbContext db, IEvidenceStore store, IE
     public async Task<EvidenceResult> ReceiveAsync(
         Guid engagementId, Guid userId, string hash, string fileName, string? mediaType, Stream content, CancellationToken cancellationToken)
     {
-        var grant = await access.GetAsync(engagementId, userId, cancellationToken);
-        if (!grant.Exists || !grant.IsMember)
+        if (await CheckCanUploadAsync(engagementId, userId, cancellationToken) is { } refusal)
         {
-            return new EvidenceResult(EvidenceOutcome.NotMember, "Not a member of this engagement.");
-        }
-
-        if (grant.IsReadOnly)
-        {
-            return new EvidenceResult(EvidenceOutcome.Locked, FieldSyncEngine.LockedReason);
-        }
-
-        if (!FieldPolicy.CanEdit(grant.Roles))
-        {
-            return new EvidenceResult(EvidenceOutcome.NotAllowed, FieldPolicy.NotAnEditor);
+            return refusal;
         }
 
         EvidenceRef stored;
@@ -111,6 +106,23 @@ public sealed class EvidenceService(MasterDbContext db, IEvidenceStore store, IE
         await db.SaveChangesAsync(cancellationToken);
         await tx.CommitAsync(cancellationToken);
         return new EvidenceResult(EvidenceOutcome.Ok, Info: (await FirstIntakeAsync(engagementId, hash, cancellationToken))!);
+    }
+
+    /// <summary>Null when this member may add evidence to the engagement now; otherwise why not.</summary>
+    public async Task<EvidenceResult?> CheckCanUploadAsync(Guid engagementId, Guid userId, CancellationToken cancellationToken)
+    {
+        var grant = await access.GetAsync(engagementId, userId, cancellationToken);
+        if (!grant.Exists || !grant.IsMember)
+        {
+            return new EvidenceResult(EvidenceOutcome.NotMember, "Not a member of this engagement.");
+        }
+
+        if (grant.IsReadOnly)
+        {
+            return new EvidenceResult(EvidenceOutcome.Locked, FieldSyncEngine.LockedReason);
+        }
+
+        return FieldPolicy.CanEdit(grant.Roles) ? null : new EvidenceResult(EvidenceOutcome.NotAllowed, FieldPolicy.NotAnEditor);
     }
 
     /// <summary>Every evidence file of the engagement, one entry per content, described by its first intake.</summary>

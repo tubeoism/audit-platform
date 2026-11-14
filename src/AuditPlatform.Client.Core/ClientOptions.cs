@@ -23,7 +23,10 @@ public sealed class ClientOptions
     public string DatabasePath => Path.Combine(DataDirectory, "client.db");
 
     /// <summary>Largest evidence file this client attaches; the master enforces its own limit.</summary>
-    public long MaxEvidenceBytes { get; set; } = AuditPlatform.Contracts.Evidence.EvidenceRoutes.DefaultMaxBytes;
+    public long MaxEvidenceBytes { get; set; } = AuditPlatform.Contracts.Evidence.EvidenceRoutes.DefaultMaxPartedBytes;
+
+    /// <summary>A file larger than this is sent in parts, so that no single request exceeds what the proxy in front of the master takes.</summary>
+    public long PartedUploadThreshold { get; set; } = AuditPlatform.Contracts.Evidence.EvidenceRoutes.DefaultMaxBytes;
 
     public string EvidenceCachePath => Path.Combine(DataDirectory, "evidence");
 
