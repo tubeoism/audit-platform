@@ -32,6 +32,7 @@ install -o root -g root -m 0755 "$HERE/evidence-config.sh"        /usr/local/sbi
 install -o root -g root -m 0755 "$HERE/evidence-mirror.sh"        /usr/local/sbin/audit-evidence-mirror
 install -o root -g root -m 0755 "$HERE/evidence-mirror-check.sh"  /usr/local/sbin/audit-evidence-mirror-check
 install -o root -g root -m 0755 "$HERE/evidence-restore-drill.sh" /usr/local/sbin/audit-evidence-restore-drill
+install -o root -g root -m 0755 "$HERE/engagement-archive.sh"      /usr/local/sbin/audit-engagement-archive
 
 log "Encryption key (32 random bytes; generated once, never printed)"
 install -d -o root -g audit -m 0750 /etc/audit-evidence

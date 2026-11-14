@@ -30,6 +30,7 @@ MAP=(
   "evidence/evidence-mirror.sh:/usr/local/sbin/audit-evidence-mirror:evidence/evidence-setup.sh"
   "evidence/evidence-mirror-check.sh:/usr/local/sbin/audit-evidence-mirror-check:evidence/evidence-setup.sh"
   "evidence/evidence-restore-drill.sh:/usr/local/sbin/audit-evidence-restore-drill:evidence/evidence-setup.sh"
+  "evidence/engagement-archive.sh:/usr/local/sbin/audit-engagement-archive:evidence/evidence-setup.sh"
 )
 
 # The remote command always exits 0, so a non-zero status here means the VM could not be reached or read.

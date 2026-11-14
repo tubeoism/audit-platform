@@ -129,6 +129,20 @@ Giới hạn cần biết: bản sao này chạy mỗi 10 phút, nên file vừa
 | File trên VM mà R2 thiếu hoặc khác kích thước | `sudo audit-evidence-mirror-check` | Chạy `sudo systemctl start audit-evidence-mirror`. Nếu lỗi `immutable`/khác kích thước: một phía đã hỏng, chạy `audit-admin evidence verify` để biết phía nào, rồi khôi phục theo kịch bản D |
 | Diễn tập FAIL | Mail báo cáo, `journalctl -u audit-evidence-restore-drill` | Coi như sự cố: chưa chứng minh được khả năng khôi phục bằng chứng. Xử lý trong ngày |
 
+## Gói lưu trữ engagement (`audit-archive`)
+
+Engagement đã khoá được đóng gói và lưu bất biến 10 năm bằng `sudo audit-engagement-archive <mã>` (xem `docs/engagement-archive.md`). Gói là một file tar mã hoá bằng **khoá bằng chứng** (cùng khoá với bản sao bằng chứng; mất khoá thì không đọc được gói).
+
+Đọc lại một gói (trên VM đã cài `evidence-setup.sh`, hoặc máy khác có rclone và khoá qua `audit-evidence-key --install`):
+
+```bash
+sudo -u audit rclone lsf archive:<mã> --config /etc/audit-evidence/rclone.conf
+sudo -u audit rclone copyto archive:<mã>/<tên>.tar /srv/audit/archive-staging/<tên>.tar --config /etc/audit-evidence/rclone.conf
+cd /srv/audit/archive-staging && tar -xf <tên>.tar && sha256sum -c engagement-*/SHA256SUMS
+```
+
+`sha256sum -c` phải báo OK cho mọi file. Mã băm của cả file tar nằm trong audit log (`engagement.archived`, `tarSha256`). Đối tượng trong `audit-archive` không xoá được và không ghi đè được: gói lỗi hoặc dư vẫn nằm đó; chỉ cần không đánh dấu `Archived` cho nó.
+
 ## Thay khoá hoặc token
 
 - **R2 token mới**: `sudo audit-set-secrets` (lệnh này gọi `audit-walg-config`), rồi `sudo audit-evidence-config` cho bản sao bằng chứng. Kiểm lại bằng `sudo audit-pg-backup-check` và `sudo audit-evidence-mirror-check`.
