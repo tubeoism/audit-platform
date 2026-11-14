@@ -8,6 +8,12 @@ public interface IEvidenceStore
 {
     ValueTask<EvidenceRef> PutAsync(Stream content, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Stores the content only if it hashes to <paramref name="expectedHash"/>; otherwise nothing is kept and
+    /// <see cref="EvidenceIntegrityException"/> is thrown. Used when the sender names the object it is sending.
+    /// </summary>
+    ValueTask<EvidenceRef> PutAsync(Stream content, string expectedHash, CancellationToken cancellationToken);
+
     ValueTask<bool> ExistsAsync(string hash, CancellationToken cancellationToken);
 
     /// <summary>Opens the object for reading after verifying that its content still matches its hash.</summary>

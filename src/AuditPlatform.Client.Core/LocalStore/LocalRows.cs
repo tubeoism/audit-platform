@@ -127,6 +127,35 @@ public sealed class LocalTemplateRow
     public required string EvidenceToCheck { get; set; }
 }
 
+public enum EvidenceUpload
+{
+    /// <summary>Attached on this laptop; the master does not hold the file yet.</summary>
+    Pending = 0,
+
+    /// <summary>The master holds the file.</summary>
+    AtMaster = 1,
+
+    /// <summary>The master refused the file; <see cref="LocalEvidenceRow.LastError"/> says why. Never sent again.</summary>
+    Refused = 2,
+}
+
+/// <summary>
+/// An evidence file of an engagement as this laptop knows it: attached here, or listed by the master. The bytes are
+/// in the content-addressed store beside the database, under <see cref="Hash"/>, when this laptop has them at all.
+/// </summary>
+public sealed class LocalEvidenceRow
+{
+    public Guid EngagementId { get; set; }
+    public required string Hash { get; set; }
+    public required string FileName { get; set; }
+    public long SizeBytes { get; set; }
+    public Guid AddedBy { get; set; }
+    public DateTimeOffset AddedAt { get; set; }
+    public EvidenceUpload Upload { get; set; }
+    public string? LastError { get; set; }
+    public int Attempts { get; set; }
+}
+
 /// <summary>
 /// Who last signed in on this laptop. Lets the client open offline with the stored session (ADR-0005) and still
 /// know whose edits it is recording. It holds no credential.

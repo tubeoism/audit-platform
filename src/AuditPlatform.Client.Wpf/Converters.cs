@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
+using AuditPlatform.Client.Core.Evidence;
 using AuditPlatform.Client.Core.ViewModels;
 
 namespace AuditPlatform.Client.Wpf;
@@ -27,4 +28,24 @@ public sealed class PresentToVisibilityConverter : IValueConverter
 internal sealed class WpfDispatcher(Application application) : IUiDispatcher
 {
     public void Post(Action action) => application.Dispatcher.BeginInvoke(action);
+}
+
+/// <summary>Opens a reading copy of an evidence file. A file Windows would run is only shown in its folder.</summary>
+internal sealed class ShellFileLauncher : IFileLauncher
+{
+    public void Open(string path)
+    {
+        var start = LocalEvidence.OpensAsDocument(path)
+            ? new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }
+            : new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = false };
+        try
+        {
+            System.Diagnostics.Process.Start(start)?.Dispose();
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            // No program is associated with this type of file.
+            throw new InvalidOperationException($"Windows không mở được file này: {ex.Message}", ex);
+        }
+    }
 }

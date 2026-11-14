@@ -143,9 +143,36 @@ function to decide what a form offers.
 | Local schema | EF Core migrations in `Client.Core/LocalStore/Migrations` | Applied at start-up; `EnsureCreated` is gone. |
 | One author per laptop | `SessionGate`, sign-out | The master records a change under the identity that delivers it, so sign-out is refused while the outbox is not empty, and another user cannot start on a laptop that holds someone else's unsent changes. |
 
-## Open after the first client slice
-1. Evidence: intake on the client, upload and download, link on the form (evidence checklist per procedure).
+## Evidence (second client slice, 2026-11-14)
+Evidence files do not travel in the change log. The log carries only the link (`link` / `unlink` with the BLAKE3-256
+hash of the content); the bytes go over plain HTTP next to the hub and live in the content-addressed store (ADR-0003).
+
+| Rule | How it is kept |
+|---|---|
+| The record never points at a file the master cannot produce | The master refuses a `link` unless a file with that hash was received **for that engagement** (`FieldPolicy.EvidenceNotReceived`). The client sends files before the changes of a round; a link whose file did not get through waits in the outbox while the rest of the outbox goes. |
+| A file is what its hash says | `PUT /api/engagements/{id}/evidence/{hash}` stores nothing unless the body hashes to the address (422 otherwise). The store re-hashes on every read; the client re-hashes what it downloads and what it opens. A mismatch on the master is logged as `evidence.damaged`. |
+| Chain of custody | One `evidence_intake` row per receipt (who, when, original file name) and `evidence.received` / `evidence.read` in the hash-chained audit log. Removing a link takes the file off the paper, never out of the store or the intake record. |
+| Evidence belongs to an engagement | List and download are for members of the engagement only; a hash known from elsewhere opens nothing. Upload needs the right to edit working papers (Preparer, Engagement manager) and an engagement that is not locked, under the same row lock as a push. |
+| Attaching works offline | The client copies the file into its own store beside the SQLite database and queues the link. The original may be moved or deleted afterwards. |
+| Opening evidence is not running it | A file is opened from a read-only copy marked as coming from the internet zone (Office opens it in Protected View). File types Windows would execute are shown in their folder, never started. |
+
+Limits and choices of this slice:
+
+- One request per file, at most 95 MB (`Master:MaxEvidenceBytes`, `Client:MaxEvidenceBytes`): the Cloudflare proxy in
+  front of the master refuses request bodies over 100 MB. Larger files need an upload in parts.
+- Files attached by others are downloaded when someone opens them, not in advance: a laptop does not carry the 2–3 GB
+  of an engagement unless its user asks. A reviewer who will work offline has to open the files while online.
+- A link is to the working paper, not to one line of the procedure's "evidence to check" list. Tying a file to a line
+  would add a field to a signed operation and is left for a decision.
+- The intake record holds the uploader, the time and the file name. Where the file came from (who handed it over, when,
+  in what form) is not asked yet.
+- The master's evidence directory is on the VM's block volume only. The mirror to R2 named in ADR-0003 does not exist
+  yet; until it does, the evidence store has no off-site copy.
+
+## Open after the second client slice
+1. Off-site copy of the evidence store (R2 mirror, encrypted), and its restore drill.
 2. Review notes and sign-off screens (the engine and the API exist); in-app notice of a broken seal beyond the status line.
 3. API and screen to lock an engagement; the engine and the client honour the status as soon as one does.
 4. Rebuild procedure for a replica that diverged or is ahead of a restored master (the loop stops and reports it).
 5. Engagement administration from the client for administrators (console commands exist).
+6. Evidence: upload in parts for files over 95 MB; "keep this engagement's evidence on this laptop"; source of the file in the intake record.

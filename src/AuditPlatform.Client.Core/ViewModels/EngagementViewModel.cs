@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using AuditPlatform.Client.Core.Directory;
+using AuditPlatform.Client.Core.Evidence;
 using AuditPlatform.Client.Core.LocalStore;
 using AuditPlatform.Client.Core.Sync;
 using AuditPlatform.Domain.Engagements;
@@ -33,10 +34,12 @@ public sealed partial class EngagementViewModel : ObservableObject
     private readonly SyncLoop _loop;
     private readonly ClientOptions _options;
     private readonly CurrentUser _user;
+    private readonly LocalEvidence _evidence;
     private List<ProcedureTemplate> _templates = [];
 
-    public EngagementViewModel(LocalUnitFactory units, SyncLoop loop, ClientOptions options, CurrentUser user, Guid engagementId)
+    public EngagementViewModel(LocalUnitFactory units, SyncLoop loop, ClientOptions options, CurrentUser user, Guid engagementId, LocalEvidence evidence)
     {
+        _evidence = evidence;
         _units = units;
         _loop = loop;
         _options = options;
@@ -150,7 +153,7 @@ public sealed partial class EngagementViewModel : ObservableObject
             return;
         }
 
-        Paper = value is null ? null : new WorkingPaperViewModel(_units, _loop, _options, _user, EngagementId, value.Id);
+        Paper = value is null ? null : new WorkingPaperViewModel(_units, _loop, _options, _user, EngagementId, value.Id, _evidence);
         _ = Paper?.ReloadAsync(CancellationToken.None);
     }
 

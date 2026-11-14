@@ -17,7 +17,19 @@ public sealed class FileSystemEvidenceStore : IEvidenceStore
         Directory.CreateDirectory(_staging);
     }
 
-    public async ValueTask<EvidenceRef> PutAsync(Stream content, CancellationToken cancellationToken)
+    public ValueTask<EvidenceRef> PutAsync(Stream content, CancellationToken cancellationToken) => PutCoreAsync(content, null, cancellationToken);
+
+    public ValueTask<EvidenceRef> PutAsync(Stream content, string expectedHash, CancellationToken cancellationToken)
+    {
+        if (!EvidenceHash.IsValid(expectedHash))
+        {
+            throw new ArgumentException("Not a BLAKE3-256 hex hash.", nameof(expectedHash));
+        }
+
+        return PutCoreAsync(content, expectedHash, cancellationToken);
+    }
+
+    private async ValueTask<EvidenceRef> PutCoreAsync(Stream content, string? expectedHash, CancellationToken cancellationToken)
     {
         var tempPath = Path.Combine(_staging, Guid.NewGuid().ToString("N"));
         string hash;
@@ -28,6 +40,11 @@ public sealed class FileSystemEvidenceStore : IEvidenceStore
             {
                 (hash, size) = await EvidenceHash.ComputeAsync(content, temp, cancellationToken);
                 await temp.FlushAsync(cancellationToken);
+            }
+
+            if (expectedHash is not null && !string.Equals(hash, expectedHash, StringComparison.Ordinal))
+            {
+                throw new EvidenceIntegrityException($"The content received hashes to {hash}, not to {expectedHash}.");
             }
 
             var finalPath = PathFor(hash);

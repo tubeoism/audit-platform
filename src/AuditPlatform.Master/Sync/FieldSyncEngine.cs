@@ -331,6 +331,11 @@ public sealed class FieldSyncEngine(MasterDbContext db, IAuditLog auditLog, Time
             // Membership opened the door; the role decides what may be done inside (ADR-0004, "Authorisation").
             decided = ApplyResult.Reject(notAllowed);
         }
+        else if (op is LinkEvidence link && !await EvidenceReceivedAsync(unit, link.ContentHash, cancellationToken))
+        {
+            // The record never points at a file the master cannot produce (ADR-0004, "Evidence").
+            decided = ApplyResult.Reject(FieldPolicy.EvidenceNotReceived);
+        }
         else
         {
             decided = loaded.Doc.Apply(change.ChangeId, change.AuthorUserId, op);
@@ -383,6 +388,10 @@ public sealed class FieldSyncEngine(MasterDbContext db, IAuditLog auditLog, Time
 
         return new ChangeResult(change.ChangeId, outcome, decided.Reason);
     }
+
+    private async Task<bool> EvidenceReceivedAsync(Unit unit, string hash, CancellationToken cancellationToken) =>
+        AuditPlatform.Evidence.EvidenceHash.IsValid(hash)
+        && await db.EvidenceIntake.AsNoTracking().AnyAsync(i => i.EngagementId == unit.EngagementId && i.Hash == hash, cancellationToken);
 
     private async Task<HashSet<EngagementRole>> RolesAsync(Unit unit, Guid userId, CancellationToken cancellationToken)
     {

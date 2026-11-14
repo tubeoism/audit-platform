@@ -16,6 +16,9 @@ internal sealed class ReferenceEngine : IDocumentSyncEngine
     /// <summary>Roles per member, as the durable engine reads them from <c>engagement_members</c>.</summary>
     public Dictionary<Guid, HashSet<AuditPlatform.Domain.Engagements.EngagementRole>> Roles { get; } = [];
 
+    /// <summary>Evidence files the master holds, per engagement, as the durable engine reads them from <c>evidence_intake</c>.</summary>
+    public HashSet<(Guid Engagement, string Hash)> Evidence { get; } = [];
+
     public IReadOnlySet<string> SupportedPayloadKinds { get; } = new HashSet<string> { FieldPayload.Kind };
 
     public ValueTask<PushResult> ApplyAsync(Guid engagementId, IReadOnlyList<ChangeEnvelope> changes, CancellationToken cancellationToken)
@@ -119,6 +122,10 @@ internal sealed class ReferenceEngine : IDocumentSyncEngine
                      state.Document(change.DocumentId, change.EngagementId), change.AuthorUserId) is { } notAllowed)
         {
             result = new ChangeResult(change.ChangeId, ChangeOutcome.Rejected, notAllowed);
+        }
+        else if (op is LinkEvidence link && !Evidence.Contains((change.EngagementId, link.ContentHash)))
+        {
+            result = new ChangeResult(change.ChangeId, ChangeOutcome.Rejected, FieldPolicy.EvidenceNotReceived);
         }
         else
         {

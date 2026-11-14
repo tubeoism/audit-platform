@@ -37,9 +37,10 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
     }
 
     /// <summary>Pushes, then pulls. Returns what the master took and what it sent back.</summary>
-    public async Task<(int Delivered, int Received)> SyncAsync(Guid engagementId, CancellationToken cancellationToken)
+    /// <param name="held">Local sequences of changes that must wait this round (links to files the master does not hold yet).</param>
+    public async Task<(int Delivered, int Received)> SyncAsync(Guid engagementId, CancellationToken cancellationToken, IReadOnlyCollection<long>? held = null)
     {
-        var delivered = await PushPendingAsync(engagementId, cancellationToken);
+        var delivered = await PushPendingAsync(engagementId, cancellationToken, held);
         var received = await PullAsync(engagementId, cancellationToken);
         return (delivered, received);
     }
@@ -48,8 +49,9 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
     /// Pushes pending changes for one engagement in the order they were made. Returns the number of changes the
     /// master accepted or already had. Safe to repeat: the master answers a redelivered change as it did the first time.
     /// </summary>
-    public async Task<int> PushPendingAsync(Guid engagementId, CancellationToken cancellationToken)
+    public async Task<int> PushPendingAsync(Guid engagementId, CancellationToken cancellationToken, IReadOnlyCollection<long>? held = null)
     {
+        held ??= [];
         if (transport.State != ConnectionState.Online)
         {
             return 0;
@@ -59,7 +61,7 @@ public sealed class SyncAgent(LocalDbContext db, ISyncTransport transport, ILoca
         while (true)
         {
             var batch = await db.Outbox
-                .Where(o => o.EngagementId == engagementId && o.State == OutboxState.Pending)
+                .Where(o => o.EngagementId == engagementId && o.State == OutboxState.Pending && !held.Contains(o.LocalSequence))
                 .OrderBy(o => o.LocalSequence)
                 .Take(PushBatchSize)
                 .ToListAsync(cancellationToken);

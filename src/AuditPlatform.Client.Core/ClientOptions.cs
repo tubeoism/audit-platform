@@ -22,5 +22,11 @@ public sealed class ClientOptions
 
     public string DatabasePath => Path.Combine(DataDirectory, "client.db");
 
+    /// <summary>Largest evidence file this client attaches; the master enforces its own limit.</summary>
+    public long MaxEvidenceBytes { get; set; } = AuditPlatform.Contracts.Evidence.EvidenceRoutes.DefaultMaxBytes;
+
     public string EvidenceCachePath => Path.Combine(DataDirectory, "evidence");
+
+    /// <summary>Copies of evidence files under their own names, made when a file is opened; emptied at start-up.</summary>
+    public string EvidenceViewPath => Path.Combine(DataDirectory, "evidence-view");
 }

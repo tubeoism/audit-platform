@@ -95,7 +95,8 @@
       <!-- The form of the selected working paper. -->
       <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto"
                     Visibility="{Binding Engagement.Paper, Converter={StaticResource Present}}">
-        <StackPanel x:Name="PaperPanel" Margin="24,16,24,32" MaxWidth="900" HorizontalAlignment="Left"
+        <StackPanel x:Name="PaperPanel" Margin="24,16,24,32" MaxWidth="900" HorizontalAlignment="Left" Background="Transparent"
+                    AllowDrop="True" DragOver="Paper_DragOver" Drop="Paper_Drop"
                     DataContext="{Binding Engagement.Paper}">
           <TextBlock Text="{Binding Title}" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" />
           <TextBlock Style="{StaticResource Muted}" Margin="0,4,0,0">
@@ -186,6 +187,49 @@
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>
+
+          <!-- Files attached to this paper. Dropping files anywhere on the form attaches them too. -->
+          <TextBlock Text="Bằng chứng đính kèm" Style="{StaticResource SectionTitle}" />
+          <ItemsControl ItemsSource="{Binding Evidence}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border BorderBrush="#D5DAE1" BorderThickness="1" Padding="10,6" Margin="0,0,0,6">
+                  <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                      <Button Content="Mở" CommandParameter="{Binding}" Margin="0,0,6,0"
+                              Command="{Binding DataContext.OpenEvidenceCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" />
+                      <Button Content="Gỡ" CommandParameter="{Binding}"
+                              Command="{Binding DataContext.RemoveEvidenceCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                              Visibility="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=ItemsControl}, Converter={StaticResource Present}}" />
+                    </StackPanel>
+                    <StackPanel>
+                      <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding Hash}" />
+                      <TextBlock FontSize="11.5" TextWrapping="Wrap">
+                        <TextBlock.Style>
+                          <Style TargetType="TextBlock" BasedOn="{StaticResource Muted}">
+                            <Style.Triggers>
+                              <DataTrigger Binding="{Binding NeedsAttention}" Value="True">
+                                <Setter Property="Foreground" Value="Firebrick" />
+                              </DataTrigger>
+                            </Style.Triggers>
+                          </Style>
+                        </TextBlock.Style>
+                        <Run Text="{Binding Detail, Mode=OneWay}" /><Run Text=" · mã băm " /><Run Text="{Binding ShortHash, Mode=OneWay}" />
+                      </TextBlock>
+                    </StackPanel>
+                  </DockPanel>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <TextBlock Text="Chưa có file nào." Style="{StaticResource Muted}"
+                     Visibility="{Binding Evidence.Count, Converter={StaticResource Present}, ConverterParameter=absent}" />
+          <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                      Visibility="{Binding CanEdit, Converter={StaticResource Present}}">
+            <Button Content="Đính kèm file…" Click="Attach_Click" />
+            <TextBlock Text="hoặc kéo thả file vào biểu mẫu. File được sao vào máy này và gửi lên máy chủ khi có kết nối."
+                       Style="{StaticResource Muted}" VerticalAlignment="Center" Margin="10,0,0,0" TextWrapping="Wrap" />
+          </StackPanel>
 
           <TextBlock Text="Nội dung thực hiện và kết quả" Style="{StaticResource SectionTitle}" />
           <ItemsControl ItemsSource="{Binding Fields}">

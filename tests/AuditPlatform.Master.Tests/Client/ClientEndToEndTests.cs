@@ -1,6 +1,8 @@
 using AuditPlatform.Client.Core;
 using AuditPlatform.Client.Core.Auth;
 using AuditPlatform.Client.Core.Directory;
+using AuditPlatform.Client.Core.Evidence;
+using AuditPlatform.Sync;
 using AuditPlatform.Client.Core.LocalStore;
 using AuditPlatform.Client.Core.Sync;
 using AuditPlatform.Client.Core.ViewModels;
@@ -68,6 +70,13 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
         }
     }
 
+    private sealed class Opened : IFileLauncher
+    {
+        public List<string> Paths { get; } = [];
+
+        public void Open(string path) => Paths.Add(path);
+    }
+
     private sealed class FileDbFactory(string path) : IDbContextFactory<LocalDbContext>
     {
         public LocalDbContext CreateDbContext() =>
@@ -81,6 +90,7 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
         private readonly HttpClient _http;
         private readonly AuthFactory _factory;
         private readonly FileDbFactory _contexts;
+        private readonly LocalUnitFactory _units;
 
         public Desk(AuthFactory factory, TestUser user)
         {
@@ -100,9 +110,28 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
                 o.HttpMessageHandlerFactory = _ => factory.Server.CreateHandler();
                 o.Transports = HttpTransportType.LongPolling;
             });
-            var units = new LocalUnitFactory(_contexts, Transport, options, factory.Clock);
-            Loop = new SyncLoop(units, Transport, new MasterDirectorySource(Session), options);
-            Shell = new ShellViewModel(units, Loop, Session, options, new NoDispatcher());
+            var units = _units = new LocalUnitFactory(_contexts, Transport, options, factory.Clock);
+            _evidenceHttp = factory.CreateClient();
+            Files = new MasterEvidenceTransport(_evidenceHttp, options, () => Session.GetAccessTokenAsync());
+            Evidence = new LocalEvidence(options, Files, Launcher);
+            Loop = new SyncLoop(units, Transport, new MasterDirectorySource(Session), options, Evidence);
+            Shell = new ShellViewModel(units, Loop, Session, options, new NoDispatcher(), Evidence);
+        }
+
+        private readonly HttpClient _evidenceHttp;
+
+        public MasterEvidenceTransport Files { get; }
+        public LocalEvidence Evidence { get; }
+        public Opened Launcher { get; } = new();
+
+        /// <summary>A file somewhere on the laptop, outside the application's own folders.</summary>
+        public string Write(string name, string content)
+        {
+            var folder = Path.Combine(_directory, "desktop");
+            System.IO.Directory.CreateDirectory(folder);
+            var path = Path.Combine(folder, name);
+            File.WriteAllText(path, content);
+            return path;
         }
 
         public TestUser User { get; }
@@ -114,6 +143,10 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
         public WorkingPaperViewModel Paper => Shell.Engagement!.Paper!;
 
         public LocalDbContext OpenDb() => _contexts.CreateDbContext();
+
+        public Task<LocalUnit> OpenUnitAsync() => _units.OpenAsync(Ct);
+
+        public Guid UserId => Session.User!.Id;
 
         /// <summary>What the application does between start-up and the main window.</summary>
         public async Task<string?> StartAsync()
@@ -163,7 +196,13 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
             await Transport.DisposeAsync();
             Session.Dispose();
             _http.Dispose();
+            _evidenceHttp.Dispose();
             SqliteConnection.ClearAllPools();
+            foreach (var file in System.IO.Directory.EnumerateFiles(_directory, "*", SearchOption.AllDirectories))
+            {
+                File.SetAttributes(file, FileAttributes.Normal);
+            }
+
             System.IO.Directory.Delete(_directory, recursive: true);
         }
     }
@@ -339,5 +378,138 @@ public sealed class ClientEndToEndTests(AuthFactory factory) : IClassFixture<Aut
         Assert.Equal(2, await AdminCli.RunAsync(factory.Services, ["engagement", "member", "X-1", "a@audit.io.vn", "owner"], output));
         Assert.Contains("template_empty", output.ToString(), StringComparison.Ordinal);
         Assert.Contains("engagement_unknown", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Evidence_attached_on_a_form_reaches_the_master_before_its_link_and_is_read_back_verified()
+    {
+        factory.RequireDatabase();
+        factory.Clock.CatchUpWithRealTime();
+        var an = await factory.EnrolAsync();
+        var binh = await factory.EnrolAsync();
+        var reviewer = await factory.EnrolAsync();
+        var outsider = await factory.EnrolAsync();
+        var code = "ENG-" + Guid.NewGuid().ToString("N")[..8];
+        await AdminAsync(null, "engagement", "create", code, "Công ty ABC", "AUP-2026-015", "2026-01-01", "2026-12-31");
+        await AdminAsync(null, "engagement", "member", code, an.Email, "preparer");
+        await AdminAsync(null, "engagement", "member", code, binh.Email, "preparer");
+        await AdminAsync(null, "engagement", "member", code, reviewer.Email, "managerqa");
+        await AdminAsync(CashArea, "templates", "import", "en");
+
+        await using var deskAn = new Desk(factory, an);
+        await using var deskBinh = new Desk(factory, binh);
+        await using var deskReviewer = new Desk(factory, reviewer);
+        await using var deskOutsider = new Desk(factory, outsider);
+        Assert.Null(await deskAn.StartAsync());
+        Assert.Null(await deskBinh.StartAsync());
+        Assert.Null(await deskReviewer.StartAsync());
+        Assert.Null(await deskOutsider.StartAsync());
+        var engagement = deskAn.Engagement.EngagementId;
+
+        // ----- An creates a paper and attaches two files before anything is synchronised.
+        deskAn.Engagement.SelectedTemplate = deskAn.Engagement.AreaTemplates.Single(t => t.Template.Code == "AUP-CSH-03");
+        await deskAn.Engagement.CreatePaperCommand.ExecuteAsync(null);
+        var countSheet = deskAn.Write("Biên bản kiểm quỹ 31-12.pdf", "cash count sheet, signed by the cashier");
+        var ledger = deskAn.Write("So quy.xlsx", "cash ledger export");
+        await deskAn.Paper.AttachCommand.ExecuteAsync(new[] { countSheet, ledger, deskAn.Write("empty.txt", ""), countSheet });
+        // The empty file and the second copy of the count sheet are refused with a reason; the two good files are in.
+        Assert.Contains("rỗng", deskAn.Paper.Error, StringComparison.Ordinal);
+        Assert.Contains("đã được đính kèm", deskAn.Paper.Error, StringComparison.Ordinal);
+        Assert.Equal(["Biên bản kiểm quỹ 31-12.pdf", "So quy.xlsx"], deskAn.Paper.Evidence.Select(e => e.FileName));
+        Assert.All(deskAn.Paper.Evidence, e => Assert.Contains("chờ tải lên máy chủ", e.Detail, StringComparison.Ordinal));
+        // The original can go: the application keeps its own copy.
+        File.Delete(countSheet);
+
+        await deskAn.SyncAsync();
+        Assert.Equal((0, 0, 0), (deskAn.Loop.Status.Pending, deskAn.Loop.Status.PendingFiles, deskAn.Loop.Status.NeedsAttention));
+        Assert.All(deskAn.Paper.Evidence, e => Assert.Contains("đã ở máy chủ · có bản trên máy này", e.Detail, StringComparison.Ordinal));
+        var sheet = deskAn.Paper.Evidence.Single(e => e.FileName.StartsWith("Biên bản", StringComparison.Ordinal));
+
+        // ----- On the master: the files were received first, then the links were admitted, all on the audit log.
+        var audit = (await factory.AuditAsync()).Where(a => a.EngagementId == engagement).ToList();
+        var received = audit.FindIndex(a => a.Action == "evidence.received" && a.EntityId == sheet.Hash);
+        var linked = audit.FindIndex(a => a.Action == "sync.link.accepted" && a.PayloadJson.Contains(sheet.Hash, StringComparison.Ordinal));
+        Assert.True(received >= 0 && linked > received, $"received at {received}, linked at {linked}");
+        Assert.Contains(audit, a => a.Action == "evidence.received" && a.ActorUserId == deskAn.UserId
+            && a.PayloadJson.Contains("So quy.xlsx", StringComparison.Ordinal));
+        Assert.Equal(2, audit.Count(a => a.Action == "evidence.received"));
+
+        // ----- Binh sees the files by name without having them, and gets one when opening it.
+        await deskBinh.SyncAsync();
+        deskBinh.Engagement.SelectedPaper = Assert.Single(deskBinh.Engagement.Papers);
+        await deskBinh.Paper.ReloadAsync(Ct);
+        var seen = deskBinh.Paper.Evidence.Single(e => e.Hash == sheet.Hash);
+        Assert.Equal("Biên bản kiểm quỹ 31-12.pdf", seen.FileName);
+        Assert.Contains("tải về khi mở", seen.Detail, StringComparison.Ordinal);
+        Assert.False(deskBinh.Evidence.IsHere(sheet.Hash));
+        await deskBinh.Paper.OpenEvidenceCommand.ExecuteAsync(seen);
+        Assert.Null(deskBinh.Paper.Error);
+        var opened = Assert.Single(deskBinh.Launcher.Paths);
+        Assert.Equal("Biên bản kiểm quỹ 31-12.pdf", Path.GetFileName(opened));
+        Assert.Equal("cash count sheet, signed by the cashier", await File.ReadAllTextAsync(opened, Ct));
+        Assert.True(File.GetAttributes(opened).HasFlag(FileAttributes.ReadOnly));
+        Assert.True(deskBinh.Evidence.IsHere(sheet.Hash));
+        Assert.Contains((await factory.AuditAsync()), a => a.Action == "evidence.read" && a.EntityId == sheet.Hash && a.ActorUserId == deskBinh.UserId);
+
+        // ----- The reviewer reads evidence and does not add any; an outsider gets nothing, even with the hash.
+        await deskReviewer.SyncAsync();
+        deskReviewer.Engagement.SelectedPaper = Assert.Single(deskReviewer.Engagement.Papers);
+        await deskReviewer.Paper.ReloadAsync(Ct);
+        Assert.Equal(2, deskReviewer.Paper.Evidence.Count);
+        await deskReviewer.Paper.AttachCommand.ExecuteAsync(new[] { deskReviewer.Write("note.txt", "from the reviewer") });
+        Assert.Equal(2, deskReviewer.Paper.Evidence.Count);
+        await using (var note = new MemoryStream("from the reviewer"u8.ToArray()))
+        {
+            var hash = (await AuditPlatform.Evidence.EvidenceHash.ComputeAsync(note, null, Ct)).Hash;
+            note.Position = 0;
+            Assert.Equal((EvidenceSend.Refused, FieldPolicy.NotAnEditor), await SendAsync(deskReviewer, engagement, hash, note));
+        }
+
+        Assert.Null(await deskOutsider.Files.ListAsync(engagement, Ct));
+        await using (var stolen = new MemoryStream())
+        {
+            Assert.False(await deskOutsider.Files.FetchAsync(engagement, sheet.Hash, stolen, Ct));
+            Assert.Equal(0, stolen.Length);
+        }
+
+        // ----- What the master refuses: content that is not what its address says, and a file over the limit.
+        await using (var other = new MemoryStream("something else"u8.ToArray()))
+        {
+            var (outcome, reason) = await SendAsync(deskAn, engagement, new string('0', 64), other);
+            Assert.Equal(EvidenceSend.Refused, outcome);
+            Assert.Contains("hashes to", reason, StringComparison.Ordinal);
+        }
+
+        await using (var huge = new MemoryStream(new byte[AuthFactory.MaxEvidenceBytes + 1]))
+        {
+            var (outcome, reason) = await SendAsync(deskAn, engagement, new string('1', 64), huge);
+            Assert.Equal(EvidenceSend.Refused, outcome);
+            Assert.Contains("at most 1 MB", reason, StringComparison.Ordinal);
+        }
+
+        // ----- A link that did not come with its file (a modified client) is refused and returned to its author.
+        await using (var unit = await deskBinh.OpenUnitAsync())
+        {
+            await unit.Workspace(engagement, deskBinh.UserId).LinkEvidenceAsync(deskBinh.Paper.DocumentId, new string('2', 64), Ct);
+        }
+
+        await deskBinh.SyncAsync();
+        Assert.Contains(FieldPolicy.EvidenceNotReceived, Assert.Single(deskBinh.Paper.Attention).Text, StringComparison.Ordinal);
+        Assert.Equal(2, deskBinh.Paper.Evidence.Count);
+        await deskBinh.Paper.DismissCommand.ExecuteAsync(deskBinh.Paper.Attention[0]);
+
+        // ----- Removing a link takes the file off the paper, not out of the engagement's record.
+        await deskAn.Paper.RemoveEvidenceCommand.ExecuteAsync(deskAn.Paper.Evidence.Single(e => e.FileName == "So quy.xlsx"));
+        Assert.Single(deskAn.Paper.Evidence);
+        await deskAn.SyncAsync();
+        await deskBinh.SyncAsync();
+        Assert.Equal(sheet.Hash, Assert.Single(deskBinh.Paper.Evidence).Hash);
+        Assert.Equal(2, (await deskAn.Files.ListAsync(engagement, Ct))!.Count);
+    }
+
+    private static async Task<(EvidenceSend Outcome, string? Reason)> SendAsync(Desk desk, Guid engagement, string hash, Stream content)
+    {
+        var result = await desk.Files.SendAsync(engagement, hash, "file.bin", content, Ct);
+        return (result.Outcome, result.Reason);
     }
 }

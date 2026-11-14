@@ -91,6 +91,44 @@ namespace AuditPlatform.Client.Core.LocalStore.Migrations
                     b.ToTable("engagements", (string)null);
                 });
 
+            modelBuilder.Entity("AuditPlatform.Client.Core.LocalStore.LocalEvidenceRow", b =>
+                {
+                    b.Property<Guid>("EngagementId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Hash")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("AddedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid>("AddedBy")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("LastError")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Upload")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("EngagementId", "Hash");
+
+                    b.HasIndex("EngagementId", "Upload");
+
+                    b.ToTable("evidence", (string)null);
+                });
+
             modelBuilder.Entity("AuditPlatform.Client.Core.LocalStore.LocalMemberRow", b =>
                 {
                     b.Property<Guid>("EngagementId")

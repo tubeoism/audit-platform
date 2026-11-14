@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using AuditPlatform.Client.Core.Directory;
+using AuditPlatform.Client.Core.Evidence;
 using AuditPlatform.Client.Core.LocalStore;
 using AuditPlatform.Client.Core.Sync;
 using AuditPlatform.Client.Core.WorkingPapers;
@@ -63,6 +64,13 @@ public sealed record ConflictViewModel(
 
 public sealed record AttentionViewModel(Guid ChangeId, string Text);
 
+/// <summary>One evidence file linked to the paper. <see cref="Detail"/> says where the file is: here, on the way, or at the master only.</summary>
+public sealed record EvidenceItemViewModel(string Hash, string FileName, string Detail, bool NeedsAttention)
+{
+    /// <summary>Enough of the hash to compare by eye with the intake record.</summary>
+    public string ShortHash => Hash.Length > 12 ? Hash[..12] : Hash;
+}
+
 /// <summary>
 /// The form of one working paper: the procedure, one box per field, flagged conflicts with both values, and what
 /// the master refused. Every save goes to the outbox first; the form works the same with or without a connection.
@@ -74,9 +82,12 @@ public sealed partial class WorkingPaperViewModel : ObservableObject
     private readonly ClientOptions _options;
     private readonly CurrentUser _user;
     private readonly Guid _engagementId;
+    private readonly LocalEvidence _evidence;
 
-    public WorkingPaperViewModel(LocalUnitFactory units, SyncLoop loop, ClientOptions options, CurrentUser user, Guid engagementId, Guid documentId)
+    public WorkingPaperViewModel(
+        LocalUnitFactory units, SyncLoop loop, ClientOptions options, CurrentUser user, Guid engagementId, Guid documentId, LocalEvidence evidence)
     {
+        _evidence = evidence;
         _units = units;
         _loop = loop;
         _options = options;
@@ -89,6 +100,7 @@ public sealed partial class WorkingPaperViewModel : ObservableObject
 
     public ObservableCollection<FieldViewModel> Fields { get; } = [];
     public ObservableCollection<string> EvidenceToCheck { get; } = [];
+    public ObservableCollection<EvidenceItemViewModel> Evidence { get; } = [];
     public ObservableCollection<ConflictViewModel> Conflicts { get; } = [];
     public ObservableCollection<AttentionViewModel> Attention { get; } = [];
     public ObservableCollection<string> SignOffs { get; } = [];
@@ -151,6 +163,25 @@ public sealed partial class WorkingPaperViewModel : ObservableObject
 
         Replace(EvidenceToCheck, template?.EvidenceToCheck ?? []);
 
+        var files = (await unit.Db.Evidence.AsNoTracking().Where(e => e.EngagementId == _engagementId).ToListAsync(cancellationToken))
+            .ToDictionary(e => e.Hash);
+        Replace(Evidence, view.Evidence.Select(hash =>
+        {
+            files.TryGetValue(hash, out var file);
+            var where = file switch
+            {
+                null => "chưa rõ tên file; đồng bộ khi có mạng",
+                { Upload: EvidenceUpload.Refused } => $"máy chủ không nhận: {file.LastError}",
+                { Upload: EvidenceUpload.Pending } => "chờ tải lên máy chủ",
+                _ when view.PendingEvidence.Contains(hash) => "đã ở máy chủ · chờ gửi liên kết",
+                _ when _evidence.IsHere(hash) => "đã ở máy chủ · có bản trên máy này",
+                _ => "đã ở máy chủ · tải về khi mở",
+            };
+            return new EvidenceItemViewModel(hash, file?.FileName ?? hash[..Math.Min(16, hash.Length)],
+                file is null ? where : $"{LocalEvidence.Size(file.SizeBytes)} · {Name(file.AddedBy)} · {where}",
+                file is null or { Upload: EvidenceUpload.Refused });
+        }).OrderBy(e => e.FileName, StringComparer.CurrentCultureIgnoreCase).ThenBy(e => e.Hash, StringComparer.Ordinal));
+
         // Fields of the layout first, then anything saved under a key this layout does not know: content is never hidden.
         var specs = WorkingPaperLayout.For(template, _options.TemplateLanguage).ToList();
         var known = specs.Select(s => s.Key).ToHashSet(StringComparer.Ordinal);
@@ -181,7 +212,8 @@ public sealed partial class WorkingPaperViewModel : ObservableObject
         HasConflicts = Conflicts.Count > 0;
 
         Replace(Attention, view.Attention.Where(a => a.State == OutboxState.Rejected).Select(a => new AttentionViewModel(a.ChangeId,
-            $"Máy chủ từ chối thay đổi của bạn{(a.Op is SetField set ? $" ở ô “{labels.GetValueOrDefault(set.Key, set.Key)}”: “{set.Value}”" : $" ({a.Op.Name})")}. Lý do: {a.Reason}")));
+            $"Máy chủ từ chối thay đổi của bạn{(a.Op is SetField set ? $" ở ô “{labels.GetValueOrDefault(set.Key, set.Key)}”: “{set.Value}”" : a.Op is LinkEvidence link ? $": đính kèm file “{files.GetValueOrDefault(link.ContentHash)?.FileName ?? link.ContentHash[..Math.Min(16, link.ContentHash.Length)]}”"
+                : $" ({a.Op.Name})")}. Lý do: {a.Reason}")));
         HasAttention = Attention.Count > 0;
 
         Replace(SignOffs, doc.SignOffs.Select(s =>
@@ -218,6 +250,62 @@ public sealed partial class WorkingPaperViewModel : ObservableObject
     [RelayCommand]
     private Task UseProposedAsync(ConflictViewModel? conflict, CancellationToken cancellationToken) =>
         ResolveAsync(conflict, conflict?.ProposedValue, cancellationToken);
+
+    /// <summary>Attaches files to the paper: each is copied into the local store and linked. One bad file does not stop the others.</summary>
+    [RelayCommand]
+    private async Task AttachAsync(IReadOnlyList<string>? paths, CancellationToken cancellationToken)
+    {
+        if (paths is not { Count: > 0 } || !CanEdit)
+        {
+            return;
+        }
+
+        var problems = new List<string>();
+        await RunAsync(async unit =>
+        {
+            foreach (var path in paths)
+            {
+                try
+                {
+                    await _evidence.AttachAsync(unit, _engagementId, _user.Id, DocumentId, path, cancellationToken);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    problems.Add(ex.Message);
+                }
+            }
+        }, cancellationToken);
+        if (problems.Count > 0)
+        {
+            Error = string.Join(Environment.NewLine, problems);
+        }
+    }
+
+    /// <summary>Removes the link. The file itself stays in the engagement's evidence and in the intake record.</summary>
+    [RelayCommand]
+    private Task RemoveEvidenceAsync(EvidenceItemViewModel? item, CancellationToken cancellationToken) =>
+        item is null || !CanEdit ? Task.CompletedTask
+            : RunAsync(unit => unit.Workspace(_engagementId, _user.Id).UnlinkEvidenceAsync(DocumentId, item.Hash, cancellationToken), cancellationToken);
+
+    [RelayCommand(AllowConcurrentExecutions = true)]
+    private async Task OpenEvidenceAsync(EvidenceItemViewModel? item, CancellationToken cancellationToken)
+    {
+        if (item is null)
+        {
+            return;
+        }
+
+        Error = null;
+        try
+        {
+            await using var unit = await _units.OpenAsync(cancellationToken);
+            await _evidence.OpenAsync(unit.Db, _engagementId, item.Hash, cancellationToken);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            Error = ex.Message;
+        }
+    }
 
     [RelayCommand]
     private Task DismissAsync(AttentionViewModel? item, CancellationToken cancellationToken) =>

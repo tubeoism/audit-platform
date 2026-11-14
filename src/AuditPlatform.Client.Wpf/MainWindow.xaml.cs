@@ -26,6 +26,32 @@ public partial class MainWindow : Window
         }
     }
 
+    private void Attach_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog { Multiselect = true, Title = "Chọn file bằng chứng" };
+        if (dialog.ShowDialog(this) == true && _viewModel.Engagement?.Paper is { } paper)
+        {
+            paper.AttachCommand.Execute(dialog.FileNames);
+        }
+    }
+
+    private void Paper_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = _viewModel.Engagement?.Paper is { CanEdit: true } && e.Data.GetDataPresent(DataFormats.FileDrop)
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void Paper_Drop(object sender, DragEventArgs e)
+    {
+        if (_viewModel.Engagement?.Paper is { CanEdit: true } paper && e.Data.GetData(DataFormats.FileDrop) is string[] dropped)
+        {
+            // Folders are not evidence files; only the files themselves are taken.
+            paper.AttachCommand.Execute(dropped.Where(System.IO.File.Exists).ToArray());
+        }
+    }
+
     /// <summary>Closing the window with the cursor still in a box must not lose what was typed there.</summary>
     private async void Window_Closing(object sender, CancelEventArgs e)
     {

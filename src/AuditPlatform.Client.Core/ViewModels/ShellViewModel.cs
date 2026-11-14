@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using AuditPlatform.Client.Core.Auth;
+using AuditPlatform.Client.Core.Evidence;
 using AuditPlatform.Client.Core.LocalStore;
 using AuditPlatform.Client.Core.Sync;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -21,10 +22,12 @@ public sealed partial class ShellViewModel : ObservableObject
     private readonly AuthSession _session;
     private readonly ClientOptions _options;
     private readonly IUiDispatcher _ui;
+    private readonly LocalEvidence _evidence;
     private CurrentUser? _user;
 
-    public ShellViewModel(LocalUnitFactory units, SyncLoop loop, AuthSession session, ClientOptions options, IUiDispatcher ui)
+    public ShellViewModel(LocalUnitFactory units, SyncLoop loop, AuthSession session, ClientOptions options, IUiDispatcher ui, LocalEvidence evidence)
     {
+        _evidence = evidence;
         ArgumentNullException.ThrowIfNull(loop);
         ArgumentNullException.ThrowIfNull(options);
         _units = units;
@@ -135,7 +138,7 @@ public sealed partial class ShellViewModel : ObservableObject
             return;
         }
 
-        Engagement = value is null || _user is null ? null : new EngagementViewModel(_units, _loop, _options, _user, value.Id);
+        Engagement = value is null || _user is null ? null : new EngagementViewModel(_units, _loop, _options, _user, value.Id, _evidence);
         _ = Engagement?.ReloadAsync(CancellationToken.None);
     }
 
@@ -152,6 +155,13 @@ public sealed partial class ShellViewModel : ObservableObject
         await using (var unit = await _units.OpenAsync(cancellationToken))
         {
             var pending = await unit.Db.Outbox.CountAsync(cancellationToken);
+            var files = await unit.Db.Evidence.CountAsync(e => e.Upload == EvidenceUpload.Pending, cancellationToken);
+            if (pending == 0 && files > 0)
+            {
+                LastError = $"Còn {files} file bằng chứng chưa tải lên máy chủ. Hãy đồng bộ xong trước khi đăng xuất.";
+                return;
+            }
+
             if (pending > 0)
             {
                 LastError = $"Còn {pending} thay đổi chưa gửi hoặc chưa xử lý. Hãy đồng bộ và xử lý xong trước khi đăng xuất.";
@@ -177,6 +187,7 @@ public sealed partial class ShellViewModel : ObservableObject
         OutboxText = string.Join(" · ", new[]
         {
             status.Pending > 0 ? $"{status.Pending} thay đổi chờ gửi" : "Không có thay đổi chờ gửi",
+            status.PendingFiles > 0 ? $"{status.PendingFiles} file chờ tải lên" : null,
             status.NeedsAttention > 0 ? $"{status.NeedsAttention} cần xử lý" : null,
             status.LastSyncedAt is { } at ? $"đồng bộ lần cuối {at.ToLocalTime():HH:mm dd/MM}" : null,
         }.OfType<string>());

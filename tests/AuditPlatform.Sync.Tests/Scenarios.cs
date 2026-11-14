@@ -219,15 +219,37 @@ public sealed class Scenarios(PostgresFixture pg) : IClassFixture<PostgresFixtur
     public async Task S6_evidence_links_follow_master_order(MasterKind kind)
     {
         using var w = await FieldWorld.StartAsync(kind, pg);
-        await w.Preparer.Work.LinkEvidenceAsync(w.Paper, "hash-count-sheet", Ct);
+        var (countSheet, bankConfirmation) = (new string('a', 64), new string('b', 64));
+        await w.Master.ReceiveEvidenceAsync(w.Engagement, countSheet, w.Preparer.UserId);
+        await w.Master.ReceiveEvidenceAsync(w.Engagement, bankConfirmation, w.Preparer.UserId);
+        await w.Preparer.Work.LinkEvidenceAsync(w.Paper, countSheet, Ct);
         await w.SyncAllAsync();
 
-        await w.Preparer.Work.LinkEvidenceAsync(w.Paper, "hash-bank-confirmation", Ct);
-        await w.Second.Work.UnlinkEvidenceAsync(w.Paper, "hash-count-sheet", Ct);
-        await w.Second.Work.LinkEvidenceAsync(w.Paper, "hash-bank-confirmation", Ct);
+        await w.Preparer.Work.LinkEvidenceAsync(w.Paper, bankConfirmation, Ct);
+        await w.Second.Work.UnlinkEvidenceAsync(w.Paper, countSheet, Ct);
+        await w.Second.Work.LinkEvidenceAsync(w.Paper, bankConfirmation, Ct);
         await w.SyncAllAsync();
 
-        Assert.Equal(["hash-bank-confirmation"], (await w.OnMasterAsync()).Evidence);
+        Assert.Equal([bankConfirmation], (await w.OnMasterAsync()).Evidence);
+        await w.AssertConvergedAsync();
+    }
+
+    [Theory, InlineData(MasterKind.Memory), InlineData(MasterKind.Postgres)]
+    public async Task S6_a_link_to_a_file_the_master_does_not_hold_is_refused(MasterKind kind)
+    {
+        using var w = await FieldWorld.StartAsync(kind, pg);
+        var (missing, elsewhere) = (new string('c', 64), new string('d', 64));
+
+        // A file received for another engagement does not count: evidence belongs to the engagement it was received for.
+        await w.Master.ReceiveEvidenceAsync(Guid.NewGuid(), elsewhere, w.Preparer.UserId);
+        await w.Preparer.Work.LinkEvidenceAsync(w.Paper, missing, Ct);
+        await w.Preparer.Work.LinkEvidenceAsync(w.Paper, elsewhere, Ct);
+        await w.Preparer.Work.LinkEvidenceAsync(w.Paper, "not-a-hash", Ct);
+        await w.SyncAllAsync();
+
+        Assert.Empty((await w.OnMasterAsync()).Evidence);
+        Assert.All(await w.Preparer.OutboxAsync(), o => Assert.Equal((OutboxState.Rejected, FieldPolicy.EvidenceNotReceived), (o.State, o.LastError)));
+        Assert.Equal(3, (await w.Preparer.OutboxAsync()).Count);
         await w.AssertConvergedAsync();
     }
 

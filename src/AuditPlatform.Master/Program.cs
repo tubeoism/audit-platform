@@ -3,6 +3,7 @@ using AuditPlatform.Evidence;
 using AuditPlatform.Master;
 using AuditPlatform.Master.Data;
 using AuditPlatform.Master.Engagements;
+using AuditPlatform.Master.Evidence;
 using AuditPlatform.Master.Notifications;
 using AuditPlatform.Master.Security;
 using AuditPlatform.Master.Sync;
@@ -37,6 +38,7 @@ builder.Services.AddScoped<IDocumentSyncEngine>(sp => sp.GetRequiredService<Fiel
 builder.Services.AddScoped<SyncCoordinator>();
 builder.Services.AddScoped<EngagementService>();
 builder.Services.AddScoped<TemplateService>();
+builder.Services.AddScoped<EvidenceService>();
 builder.Services.AddSingleton<NotificationSignal>();
 builder.Services.AddScoped<NotificationSender>();
 builder.Services.AddHostedService<NotificationDispatcher>();
@@ -73,6 +75,7 @@ app.MapAdminApi();
 app.MapAccountPages();
 app.MapSyncApi();
 app.MapDirectoryApi();
+app.MapEvidenceApi();
 
 // A connection ends when its access token expires; the client reconnects with a fresh one, so a revoked session
 // or disabled user cannot keep syncing over a socket opened earlier.
