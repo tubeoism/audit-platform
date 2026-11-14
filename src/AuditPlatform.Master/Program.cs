@@ -1,5 +1,6 @@
 using AuditPlatform.Contracts.Sync;
 using AuditPlatform.Evidence;
+using AuditPlatform.Master.Archive;
 using AuditPlatform.Master;
 using AuditPlatform.Master.Data;
 using AuditPlatform.Master.Engagements;
@@ -41,6 +42,7 @@ builder.Services.AddScoped<EngagementLifecycle>();
 builder.Services.AddScoped<TemplateService>();
 builder.Services.AddScoped<EvidenceService>();
 builder.Services.AddScoped<EvidenceUploads>();
+builder.Services.AddScoped<ArchivePackager>();
 builder.Services.AddSingleton<NotificationSignal>();
 builder.Services.AddScoped<NotificationSender>();
 builder.Services.AddHostedService<NotificationDispatcher>();
