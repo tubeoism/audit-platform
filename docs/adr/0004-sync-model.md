@@ -172,7 +172,7 @@ Limits and choices of this slice:
   reads a sample back and compares it byte for byte. `audit-admin evidence verify` re-hashes the whole store. Until the
   setup has been run on the VM and the key stored offline, the store still has no off-site copy. Not covered: the mirror
   is at most about 10 minutes behind, `audit-live` has no object lock (a leaked R2 token could delete the copy), and
-  packaging closed engagements into `audit-archive` is not built.
+  packaging closed engagements into `audit-archive` is only half built: the package and the `Archived` status exist (docs/engagement-archive.md), the upload to the locked bucket does not.
 
 ## Open after the second client slice
 1. Run the evidence mirror setup on the VM and store its key offline; later, package closed engagements into the locked `audit-archive`.

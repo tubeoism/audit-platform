@@ -94,6 +94,79 @@ public sealed class EngagementLifecycle(MasterDbContext db, IAuditLog auditLog, 
         return new LockResponse(now, readiness.Digest);
     }
 
+    /// <summary>
+    /// Marks a locked engagement as archived once its package is safe in the immutable archive. This is a console step
+    /// (an administrator on the VM), never an API call, and it only accepts a package the master itself built and
+    /// recorded (<c>engagement.archive.packaged</c>): the digests must match that entry. The data does not change; an
+    /// archived engagement is as read-only as a locked one, and it cannot be taken back.
+    /// </summary>
+    public async Task<Outcome<ArchiveResult>> ArchiveAsync(
+        Actor actor, string engagementCode, string packageDigest, string tarSha256, string location, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(actor);
+        var code = (engagementCode ?? string.Empty).Trim();
+        if (!IsSha256(packageDigest) || !IsSha256(tarSha256))
+        {
+            return new AuthFailure("digest_invalid", "Digest phải là 64 ký tự hex. / A digest is 64 hexadecimal characters.");
+        }
+
+        if (string.IsNullOrWhiteSpace(location) || location.Length > 500)
+        {
+            return new AuthFailure("location_invalid", "Cần ghi rõ nơi lưu gói (tối đa 500 ký tự). / Say where the package is stored (at most 500 characters).");
+        }
+
+        await using var tx = await db.Database.BeginTransactionAsync(cancellationToken);
+        var id = await db.Engagements.AsNoTracking().Where(e => e.Code == code).Select(e => (Guid?)e.Id).FirstOrDefaultAsync(cancellationToken);
+        var row = id is { } known ? await LockRowAsync(known, cancellationToken) : null;
+        if (row is null)
+        {
+            return new AuthFailure("engagement_not_found", $"Không có engagement '{code}'. / No engagement '{code}'.");
+        }
+
+        if (row.Status != EngagementStatus.Locked)
+        {
+            return new AuthFailure(row.Status == EngagementStatus.Archived ? "already_archived" : "not_locked",
+                row.Status == EngagementStatus.Archived
+                    ? "Engagement đã lưu trữ rồi. / The engagement is already archived."
+                    : $"Engagement đang ở {row.Status}; chỉ lưu trữ được sau khi khoá. / The engagement is {row.Status}; it can only be archived once locked.");
+        }
+
+        var packaged = (await db.AuditLog.AsNoTracking()
+                .Where(a => a.EngagementId == row.Id && a.Action == "engagement.archive.packaged").OrderByDescending(a => a.Sequence).ToListAsync(cancellationToken))
+            .FirstOrDefault(a => PackagedMatches(a.PayloadJson, packageDigest, tarSha256));
+        if (packaged is null)
+        {
+            await WriteAsync(actor, "engagement.archive.refused", row, new { reason = "package_unknown", packageDigest, tarSha256 }, cancellationToken);
+            await tx.CommitAsync(cancellationToken);
+            return new AuthFailure("package_unknown",
+                "Master chưa từng đóng gói với đúng hai digest này (chạy: audit-admin engagement package). / The master never built a package with these two digests.");
+        }
+
+        var now = clock.GetUtcNow();
+        row.Status = EngagementStatus.Archived;
+        await WriteAsync(actor, "engagement.archived", row, new { packageDigest, tarSha256, location = location.Trim(), packagedAtAuditSequence = packaged.Sequence }, cancellationToken);
+        await tx.CommitAsync(cancellationToken);
+        return new ArchiveResult(now, packageDigest, location.Trim());
+    }
+
+    private static bool IsSha256(string? value) =>
+        value is { Length: 64 } && value.All(Uri.IsHexDigit);
+
+    private static bool PackagedMatches(string payloadJson, string packageDigest, string tarSha256)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(payloadJson);
+            var detail = doc.RootElement.GetProperty("detail");
+            return string.Equals(detail.GetProperty("packageDigest").GetString(), packageDigest, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(detail.GetProperty("tarSha256").GetString(), tarSha256, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
     private async Task<EngagementRow?> LockRowAsync(Guid engagementId, CancellationToken cancellationToken) =>
         (await db.Engagements.FromSql($"SELECT * FROM engagements WHERE id = {engagementId} FOR UPDATE").Include(e => e.Members)
             .ToListAsync(cancellationToken)).FirstOrDefault();
