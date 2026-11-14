@@ -19,6 +19,8 @@ public static class FieldPolicy
     public const string NotTheOwner = "Only the preparer of this working paper or the engagement manager can decide a conflict.";
     public const string NotYourPaper = "A working paper is created by its own preparer, or assigned by the engagement manager.";
 
+    public const string EvidenceNotReceived = "The evidence file has not reached the master; a working paper can link only to a file the master holds.";
+
     public static bool CanEdit(IReadOnlySet<EngagementRole> roles)
     {
         ArgumentNullException.ThrowIfNull(roles);

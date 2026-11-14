@@ -4,6 +4,7 @@ using System.Windows;
 using AuditPlatform.Client.Core;
 using AuditPlatform.Client.Core.Auth;
 using AuditPlatform.Client.Core.Directory;
+using AuditPlatform.Client.Core.Evidence;
 using AuditPlatform.Client.Core.LocalStore;
 using AuditPlatform.Client.Core.Sync;
 using AuditPlatform.Client.Core.ViewModels;
@@ -53,12 +54,22 @@ public partial class App : Application
             return new SignalRSyncTransport(options, () => session.GetAccessTokenAsync());
         });
         builder.Services.AddSingleton<IDirectorySource, MasterDirectorySource>();
+
+        // Evidence files take minutes on a slow line, so they do not share the short timeout of the sign-in client.
+        builder.Services.AddSingleton<IEvidenceTransport>(sp =>
+        {
+            var session = sp.GetRequiredService<AuthSession>();
+            return new MasterEvidenceTransport(new HttpClient { Timeout = TimeSpan.FromMinutes(30) }, options, () => session.GetAccessTokenAsync());
+        });
+        builder.Services.AddSingleton<IFileLauncher, ShellFileLauncher>();
+        builder.Services.AddSingleton<LocalEvidence>();
         builder.Services.AddSingleton<SyncLoop>();
         builder.Services.AddSingleton<ShellViewModel>();
         builder.Services.AddTransient<SignInViewModel>();
 
         _host = builder.Build();
         await _host.StartAsync();
+        Services.GetRequiredService<LocalEvidence>().ClearReadingCopies();
 
         LocalProfileRow? profile;
         await using (var db = await Services.GetRequiredService<IDbContextFactory<LocalDbContext>>().CreateDbContextAsync())

@@ -63,6 +63,9 @@ internal sealed class AlwaysSteppedUp : ISignOffStepUp
 internal interface IMaster
 {
     Task SeedAsync(Guid engagement, IReadOnlyList<(Guid User, EngagementRole Role)> members);
+
+    /// <summary>The master has received this evidence file for the engagement (the upload itself is tested with the master host).</summary>
+    Task ReceiveEvidenceAsync(Guid engagement, string hash, Guid user);
     Task<PushResult> PushAsync(Guid user, Guid engagement, IReadOnlyList<ChangeEnvelope> changes);
     Task<PullResult> PullAsync(Guid user, Guid engagement, SyncCursor since, int max);
     Task<SignOffAttempt> SignOffAsync(Guid engagement, Guid document, EngagementRole level, Guid reviewer);
@@ -91,6 +94,12 @@ internal sealed class MemoryMaster : IMaster
             _engine.Roles[group.Key] = [.. group.Select(m => m.Role)];
         }
 
+        return Task.CompletedTask;
+    }
+
+    public Task ReceiveEvidenceAsync(Guid engagement, string hash, Guid user)
+    {
+        _engine.Evidence.Add((engagement, hash));
         return Task.CompletedTask;
     }
 
@@ -148,6 +157,22 @@ internal sealed class PostgresMaster(PostgresFixture pg) : IMaster
             Id = engagement, Code = "ENG-" + engagement.ToString("N")[..10], ClientName = "Client", ContractReference = "AUP-2026",
             PeriodStart = new DateOnly(2026, 1, 1), PeriodEnd = new DateOnly(2026, 12, 31), Status = EngagementStatus.Fieldwork,
             Members = [.. members.Select(m => new EngagementMemberRow { EngagementId = engagement, UserId = m.User, Role = m.Role })],
+        });
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+    }
+
+    public async Task ReceiveEvidenceAsync(Guid engagement, string hash, Guid user)
+    {
+        await using var db = pg.CreateContext();
+        if (!await db.EvidenceObjects.AnyAsync(o => o.Hash == hash, TestContext.Current.CancellationToken))
+        {
+            db.EvidenceObjects.Add(new EvidenceObjectRow { Hash = hash, SizeBytes = 1, FirstReceivedAt = DateTimeOffset.UtcNow });
+        }
+
+        db.EvidenceIntake.Add(new EvidenceIntakeRow
+        {
+            Id = Guid.NewGuid(), Hash = hash, EngagementId = engagement, OriginalFileName = "file.pdf", ReceivedBy = user,
+            ReceivedAt = DateTimeOffset.UtcNow, Source = "test",
         });
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
     }

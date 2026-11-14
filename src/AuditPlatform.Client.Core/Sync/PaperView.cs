@@ -37,6 +37,12 @@ public sealed class PaperView
 
     public int PendingCount { get; private set; }
 
+    /// <summary>Hashes of the evidence linked to the paper: confirmed links with the user's unsent links and removals applied.</summary>
+    public IReadOnlyList<string> Evidence { get; private set; } = [];
+
+    /// <summary>Links of this user that the master has not confirmed yet.</summary>
+    public IReadOnlySet<string> PendingEvidence { get; private set; } = new HashSet<string>();
+
     public IReadOnlyList<AttentionItem> Attention { get; private set; } = [];
 
     /// <summary>The value to show in a field: the user's unsent text if there is one, otherwise the confirmed value.</summary>
@@ -53,6 +59,8 @@ public sealed class PaperView
         };
         var pending = new Dictionary<string, string>(StringComparer.Ordinal);
         var attention = new List<AttentionItem>();
+        var evidence = new SortedSet<string>(confirmed.Evidence, StringComparer.Ordinal);
+        var pendingEvidence = new HashSet<string>(StringComparer.Ordinal);
         foreach (var row in outbox)
         {
             FieldOp op;
@@ -83,6 +91,14 @@ public sealed class PaperView
                 case SetField set:
                     pending[set.Key] = set.Value;
                     break;
+                case LinkEvidence link:
+                    evidence.Add(link.ContentHash);
+                    pendingEvidence.Add(link.ContentHash);
+                    break;
+                case UnlinkEvidence unlink:
+                    evidence.Remove(unlink.ContentHash);
+                    pendingEvidence.Remove(unlink.ContentHash);
+                    break;
                 case SubmitForReview when view.Status == WorkingPaperStatus.Draft:
                     view.Status = WorkingPaperStatus.ReadyForReview;
                     break;
@@ -91,6 +107,8 @@ public sealed class PaperView
 
         view.PendingValues = pending;
         view.Attention = attention;
+        view.Evidence = [.. evidence];
+        view.PendingEvidence = pendingEvidence;
         return view;
     }
 }

@@ -80,4 +80,21 @@ public sealed class FileSystemEvidenceStoreTests : IDisposable
         Assert.False(await store.ExistsAsync(id, TestContext.Current.CancellationToken));
         await Assert.ThrowsAsync<ArgumentException>(async () => await store.OpenVerifiedAsync(id, TestContext.Current.CancellationToken));
     }
+
+    [Fact]
+    public async Task Content_sent_under_the_wrong_hash_is_not_kept()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var store = new FileSystemEvidenceStore(_root);
+        var real = (await EvidenceHash.ComputeAsync(Content("cash count sheet"), null, ct)).Hash;
+        var claimed = new string('0', 64);
+
+        await Assert.ThrowsAsync<EvidenceIntegrityException>(async () => await store.PutAsync(Content("cash count sheet"), claimed, ct));
+        Assert.False(await store.ExistsAsync(claimed, ct));
+        Assert.False(await store.ExistsAsync(real, ct));
+        Assert.Empty(Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories));
+
+        Assert.Equal(real, (await store.PutAsync(Content("cash count sheet"), real, ct)).Hash);
+        Assert.True(await store.ExistsAsync(real, ct));
+    }
 }

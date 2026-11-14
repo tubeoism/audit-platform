@@ -2,7 +2,7 @@
 
 Working-paper platform for internal audit and fraud investigation engagements under AUP contracts. Auditors work offline on Windows laptops; a master node on an Oracle Cloud Arm VM is the system of record, coordinates real-time sync, enforces engagement lock and sign-off, and holds the archive.
 
-Status: **master with authentication and durable sync; first client slice** (sign-in, engagements, templated working papers, sync loop, conflict decision). Evidence, review notes and sign-off screens, and the engagement lock screen follow. Domain rules, contracts, audit log, evidence store, database schema, authentication (ADR-0005) and the sync engine (ADR-0004: field-level versioning with master arbitration, PostgreSQL log on the master, SQLite replica on the client, SignalR transport, TOTP step-up at sign-off) are in place and tested.
+Status: **master with authentication and durable sync; client in slices** (sign-in, engagements, templated working papers, sync loop, conflict decision, evidence attachments). Review notes and sign-off screens, and the engagement lock screen follow. Domain rules, contracts, audit log, evidence store, database schema, authentication (ADR-0005) and the sync engine (ADR-0004: field-level versioning with master arbitration, PostgreSQL log on the master, SQLite replica on the client, SignalR transport, TOTP step-up at sign-off) are in place and tested.
 
 ## Solution layout
 
@@ -94,6 +94,7 @@ Who may do what inside an engagement is the table "Authorisation" in [ADR-0004](
 - Sign in once with password and authenticator code; afterwards the client opens offline from the stored session.
 - A box on the form is saved when the cursor leaves it; the status line shows what is waiting to be sent.
 - Two people changing the same box: both values are kept and shown side by side until the paper's preparer or the engagement manager decides.
+- Evidence: "Đính kèm file…" or drag files onto the form. Works offline; files go to the master at the next sync (at most 95 MB each). Files attached by others are downloaded when opened. Local copies are under `%LOCALAPPDATA%\AuditPlatform\evidence`.
 - To change the local schema: `dotnet ef migrations add <Name> --project src/AuditPlatform.Client.Core -o LocalStore/Migrations`.
 
 ## Security rules already enforced
@@ -110,6 +111,7 @@ Who may do what inside an engagement is the table "Authorisation" in [ADR-0004](
 - Locked or archived engagements reject every change, on the master and in the client outbox.
 - `audit_log` rejects UPDATE, DELETE and TRUNCATE at database level; tampering that bypasses this is caught by chain verification.
 - Evidence is re-hashed on every read; a modified file raises `EvidenceIntegrityException`.
+- A working paper can link only to an evidence file the master holds for that engagement; files are sent before their links, listed and downloaded by members only, and every receipt and read is in the audit log (ADR-0004, "Evidence").
 - No secrets in the repository. Production configuration comes from `/etc/audit-master/master.env` on the VM (see `deploy/`).
 
 ## Decisions

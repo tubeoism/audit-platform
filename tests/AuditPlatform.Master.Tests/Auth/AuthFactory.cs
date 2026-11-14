@@ -72,7 +72,11 @@ public sealed class AuthFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
     public const string Password = "ghe-da-xanh-luot-song-42";
     private readonly PostgresFixture _pg = new();
+    private readonly string _evidenceRoot = Path.Combine(Path.GetTempPath(), "audit-master-evidence-" + Guid.NewGuid().ToString("N"));
     private int _counter;
+
+    /// <summary>Small, so that the limit can be tested with a file of a megabyte.</summary>
+    public const long MaxEvidenceBytes = 1024 * 1024;
 
     public TestClock Clock { get; } = new();
     public FakeMail Mail { get; } = new();
@@ -84,6 +88,15 @@ public sealed class AuthFactory : WebApplicationFactory<Program>, IAsyncLifetime
     {
         await base.DisposeAsync();
         await _pg.DisposeAsync();
+        if (Directory.Exists(_evidenceRoot))
+        {
+            foreach (var file in Directory.EnumerateFiles(_evidenceRoot, "*", SearchOption.AllDirectories))
+            {
+                File.SetAttributes(file, FileAttributes.Normal);
+            }
+
+            Directory.Delete(_evidenceRoot, recursive: true);
+        }
     }
 
     /// <summary>Skips the calling test when no PostgreSQL server is configured (AUDIT_TEST_PG).</summary>
@@ -105,6 +118,8 @@ public sealed class AuthFactory : WebApplicationFactory<Program>, IAsyncLifetime
         builder.UseSetting("Auth:UseHibp", "false");
         // Tests send notifications on demand, so that what they assert does not depend on a background timer.
         builder.UseSetting("Master:RunNotificationDispatcher", "false");
+        builder.UseSetting("Master:EvidenceRoot", _evidenceRoot);
+        builder.UseSetting("Master:MaxEvidenceBytes", MaxEvidenceBytes.ToString(System.Globalization.CultureInfo.InvariantCulture));
         builder.ConfigureTestServices(services =>
         {
             services.RemoveAll<TimeProvider>();

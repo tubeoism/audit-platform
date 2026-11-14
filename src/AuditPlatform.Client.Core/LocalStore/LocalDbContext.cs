@@ -12,6 +12,7 @@ public sealed class LocalDbContext(DbContextOptions<LocalDbContext> options) : D
     public DbSet<LocalMemberRow> Members => Set<LocalMemberRow>();
     public DbSet<LocalTemplateRow> Templates => Set<LocalTemplateRow>();
     public DbSet<LocalProfileRow> Profile => Set<LocalProfileRow>();
+    public DbSet<LocalEvidenceRow> Evidence => Set<LocalEvidenceRow>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -70,6 +71,15 @@ public sealed class LocalDbContext(DbContextOptions<LocalDbContext> options) : D
         {
             e.ToTable("templates");
             e.HasKey(x => new { x.Code, x.Version, x.Language });
+        });
+
+        modelBuilder.Entity<LocalEvidenceRow>(e =>
+        {
+            e.ToTable("evidence");
+            e.HasKey(x => new { x.EngagementId, x.Hash });
+            e.HasIndex(x => new { x.EngagementId, x.Upload });
+            e.Property(x => x.Upload).HasConversion<string>();
+            e.Property(x => x.AddedAt).HasConversion(v => v.UtcTicks, v => new DateTimeOffset(v, TimeSpan.Zero));
         });
 
         modelBuilder.Entity<LocalProfileRow>(e =>

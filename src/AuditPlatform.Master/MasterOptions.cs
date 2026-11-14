@@ -7,6 +7,12 @@ public sealed class MasterOptions
     /// <summary>Root directory of the content-addressed evidence store on the VM (block volume), e.g. /srv/audit/evidence.</summary>
     public string EvidenceRoot { get; set; } = "/srv/audit/evidence";
 
+    /// <summary>
+    /// Largest evidence file accepted, in bytes. The default stays under the 100 MB request limit of the Cloudflare
+    /// proxy in front of the master; a larger file needs an upload in parts, which does not exist yet.
+    /// </summary>
+    public long MaxEvidenceBytes { get; set; } = AuditPlatform.Contracts.Evidence.EvidenceRoutes.DefaultMaxBytes;
+
     /// <summary>Upper bound on changes returned by one pull.</summary>
     public int MaxPullBatch { get; set; } = 500;
 

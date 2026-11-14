@@ -1,4 +1,5 @@
 using AuditPlatform.Client.Core.Directory;
+using AuditPlatform.Client.Core.Evidence;
 using AuditPlatform.Client.Core.LocalStore;
 using Microsoft.EntityFrameworkCore;
 
@@ -7,7 +8,11 @@ namespace AuditPlatform.Client.Core.Sync;
 /// <param name="Pending">Changes waiting to be sent.</param>
 /// <param name="NeedsAttention">Changes the master flagged or refused.</param>
 /// <param name="Error">Why the last round did not complete; null when it did.</param>
-public sealed record SyncStatus(ConnectionState Connection, int Pending, int NeedsAttention, DateTimeOffset? LastSyncedAt, string? Error);
+public sealed record SyncStatus(ConnectionState Connection, int Pending, int NeedsAttention, DateTimeOffset? LastSyncedAt, string? Error)
+{
+    /// <summary>Evidence files attached on this laptop that the master does not hold yet.</summary>
+    public int PendingFiles { get; init; }
+}
 
 /// <summary>
 /// The client's sync loop (ADR-0004, open item 2): connect, read the directory, subscribe, push and pull. A round
@@ -20,6 +25,7 @@ public sealed class SyncLoop : IAsyncDisposable
     private readonly ISyncTransport _transport;
     private readonly IDirectorySource _directory;
     private readonly ClientOptions _options;
+    private readonly LocalEvidence? _evidence;
     private readonly SemaphoreSlim _wake = new(0, 1);
     private readonly SemaphoreSlim _round = new(1, 1);
     private readonly CancellationTokenSource _stop = new();
@@ -30,8 +36,9 @@ public sealed class SyncLoop : IAsyncDisposable
     private Task? _running;
     private bool _directoryDue = true;
 
-    public SyncLoop(LocalUnitFactory units, ISyncTransport transport, IDirectorySource directory, ClientOptions options)
+    public SyncLoop(LocalUnitFactory units, ISyncTransport transport, IDirectorySource directory, ClientOptions options, LocalEvidence? evidence = null)
     {
+        _evidence = evidence;
         ArgumentNullException.ThrowIfNull(transport);
         _units = units;
         _transport = transport;
@@ -146,7 +153,10 @@ public sealed class SyncLoop : IAsyncDisposable
                 await unit.Db.Outbox.CountAsync(o => o.State == OutboxState.Pending, cancellationToken),
                 await unit.Db.Outbox.CountAsync(o => o.State != OutboxState.Pending, cancellationToken),
                 (await unit.Db.SyncState.AsNoTracking().Select(s => s.LastSyncedAt).ToListAsync(cancellationToken)).Max(),
-                error);
+                error)
+            {
+                PendingFiles = await unit.Db.Evidence.CountAsync(e => e.Upload == EvidenceUpload.Pending, cancellationToken),
+            };
         }
         finally
         {
@@ -256,8 +266,19 @@ public sealed class SyncLoop : IAsyncDisposable
                 }
             }
 
-            var (delivered, received) = await unit.Agent.SyncAsync(engagementId, cancellationToken);
-            return (delivered + received > 0, null);
+            if (_evidence is null)
+            {
+                var (pushed, pulled) = await unit.Agent.SyncAsync(engagementId, cancellationToken);
+                return (pushed + pulled > 0, null);
+            }
+
+            // Files first, then the changes that link to them: the master refuses a link to a file it does not hold.
+            // A link whose file did not get through waits; the rest of the outbox does not.
+            var (sent, problem) = await _evidence.UploadPendingAsync(unit.Db, engagementId, cancellationToken);
+            var held = await LocalEvidence.HeldChangesAsync(unit.Db, engagementId, cancellationToken);
+            var (delivered, received) = await unit.Agent.SyncAsync(engagementId, cancellationToken, held);
+            var learnt = await _evidence.RefreshAsync(unit.Db, engagementId, cancellationToken);
+            return (sent + delivered + received > 0 || learnt, problem);
         }
         catch (ReplicaDivergedException ex)
         {
